@@ -1,4 +1,4 @@
-# reflexion-224
+# reflecticon-224
 
 An emulation of the Lexicon 224, 224X and 224XL digital reverbs that runs
 the machines' own firmware, in your browser or as a plugin. You supply the
@@ -6,7 +6,7 @@ ROMs; they stay on your computer.
 
 Work in progress: the code is all here; its documentation will follow.
 
-The web page, at https://joelanders.github.io/reflexion-224/:
+The web page, at https://joelanders.github.io/reflecticon-224/:
 
 <img width="750" alt="The web page" src="https://github.com/user-attachments/assets/c0db1bfa-9a64-4a50-8ab3-c72e130a686f" />
 
