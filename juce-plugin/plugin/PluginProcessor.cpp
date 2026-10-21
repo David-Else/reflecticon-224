@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(_M_X64)
 #include <xmmintrin.h>
 #endif
 #include <memory>
@@ -44,7 +44,7 @@ private:
     static void write(uint64_t r) {
         asm volatile("msr fpcr, %0" : : "r"(r));
     }
-#elif defined(__x86_64__)
+#elif defined(__x86_64__) || defined(_M_X64)
     static constexpr uint64_t flush_bits = 0x8040;      // MXCSR.FZ | MXCSR.DAZ
     static uint64_t read() {
         return _mm_getcsr();

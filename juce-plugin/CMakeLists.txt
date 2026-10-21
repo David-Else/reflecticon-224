@@ -43,6 +43,7 @@ endif()
 # in the last bits from the macOS and web builds.
 if(MSVC)
     add_compile_options(/fp:precise /bigobj /utf-8)
+    add_compile_definitions(_USE_MATH_DEFINES)   # M_PI
     # The static CRT: the plugin and the app need no VC++ redistributable.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
