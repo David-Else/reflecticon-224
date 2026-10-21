@@ -51,8 +51,9 @@ public:
     // partial products the ARU adds this row, one microinstruction older.
     void at_marker(uint32_t marker_microinstruction, bool sign_latch) {
         this->marker_microinstruction = marker_microinstruction;
-        update_dport4(sign_latch);
-        update_dport5(scheduler.now());
+        dport4 = {marker_microinstruction, sign_latch, false, false, 0, true};
+        dport5.set({marker_microinstruction, false, false, false, 0, true}, scheduler.now(),
+                   scheduler.now() + dport5_visible);
         if (trace) {
             Tick row_marker = scheduler.now();
             trace->dport(row_marker, DportEvent::MicroinstructionShown);
@@ -78,15 +79,15 @@ public:
     // ---- Outputs ----
 
     uint8_t arithmetic_monitor() const {
-        return uint8_t(dport3.read(scheduler.now()));
+        return pack_dport3(dport3.read(scheduler.now()));
     }
 
     uint8_t microinstruction_monitor() const {
-        return dport4;
+        return pack_dport4(dport4);
     }
 
     uint8_t timing_monitor() const {
-        return uint8_t(dport5.read(scheduler.now()));
+        return pack_dport5(dport5.read(scheduler.now()));
     }
 
     // ---- Probe ----
@@ -115,39 +116,92 @@ private:
         return pulse_end && t >= pulse_start && t < pulse_end;
     }
 
-    void update_dport4(bool sign_latch) {
-        uint32_t word = marker_microinstruction;
-        Microinstruction decoded = decode(word, model);
+    // What a register holds: the inputs its byte is made from, not the byte.
+    // The firmware reads the ports ~10 times a second (DPORT4 and DPORT5 only
+    // in its power-up diagnostics) against 3.4 M rows, so each row keeps the
+    // inputs and a read decodes and packs them. `set` false: never loaded,
+    // reads 0 (as the registers before the first row).
+    struct Inputs {
+        uint32_t word = 0;          // the microinstruction at the marker
+        bool sign_latch = false;    // DPORT4
+        bool saturation = false;    // DPORT3: SAT, or the one-shot's pulse
+        bool held = false;          // DPORT3: held at both ARU clocks 1 and 2
+        uint8_t aru_history = 0;    // DPORT3: U9 after ARU clocks 0 and 1
+        bool set = false;
+    };
+
+    // DelayedRegister (timing.hpp) for Inputs: `before` until `at`, then `after`.
+    struct DelayedInputs {
+        Inputs before, after;
+        Tick at = 0;
+
+        const Inputs &read(Tick t) const {
+            return t >= at ? after : before;
+        }
+
+        void set(const Inputs &value, Tick now, Tick when) {
+            before = read(now);
+            after = value;
+            at = when;
+        }
+    };
+
+    uint8_t pack_dport4(const Inputs &in) const {
+        if (!in.set) {
+            return 0;
+        }
+        Microinstruction decoded = decode(in.word, model);
         // Bit 7: the 224X shows the protect bit; the 224 (drawing 060-01317,
         // U29; 224 Service Manual port table) shows RESET there.
         bool bit7 = decoded.protect;
         if (model == Model::Lexicon224) {
             bit7 = decoded.reset;
         }
-        dport4 = pack_byte({
+        return pack_byte({
             bit(decoded.wa, 0), bit(decoded.wa, 1),             // 0-1  WA
             bit(decoded.ra, 0), bit(decoded.ra, 1),             // 2-3  RA
-            sign_latch,                                         // 4    the sign the ARU adds with
+            in.sign_latch,                                      // 4    the sign the ARU adds with
             !(decoded.op == OPER && decoded.source == FromADC), // 5    RD_AD/
             decoded.op != MEMW,                                 // 6    MEMW/
             bit7,                                               // 7    protect bit (224X), RESET (224)
         });
     }
 
-    void update_dport5(Tick row_marker) {
-        uint32_t word = marker_microinstruction;
+    uint8_t pack_dport5(const Inputs &in) const {
+        if (!in.set) {
+            return 0;
+        }
+        uint32_t word = in.word;
         bool oper = decode(word, model).op == OPER;
-        dport5.set(pack_byte({
-                       bit(word, 11),                                   // 0  DAC select A
-                       bit(word, 10),                                   // 1  DAC select B
-                       bit(word, 9),                                    // 2  DAC select C
-                       bit(word, 8),                                    // 3  DAC select D
-                       !(oper && bit(word, 7)),                         // 4  WR_DA/
-                       !(oper && bit(word, 6)),                         // 5  WR_XREG/
-                       !(oper && bits(word, 13, 12) == 2),              // 6  RD_XREG/
-                       !(decode(word, model).op == MEMW || (oper && bits(word, 13, 12) == 1)),  // 7  RD_RREG/ = NAND(MEMW/ . 2Y1/)
-                   }),
-                   scheduler.now(), row_marker + dport5_visible);
+        return pack_byte({
+            bit(word, 11),                                   // 0  DAC select A
+            bit(word, 10),                                   // 1  DAC select B
+            bit(word, 9),                                    // 2  DAC select C
+            bit(word, 8),                                    // 3  DAC select D
+            !(oper && bit(word, 7)),                         // 4  WR_DA/
+            !(oper && bit(word, 6)),                         // 5  WR_XREG/
+            !(oper && bits(word, 13, 12) == 2),              // 6  RD_XREG/
+            !(decode(word, model).op == MEMW || (oper && bits(word, 13, 12) == 1)),  // 7  RD_RREG/ = NAND(MEMW/ . 2Y1/)
+        });
+    }
+
+    // aru_history as sampled (after ARU clocks 0 and 1): bit 0 = S0^S1 at
+    // clock 1, bit 1 = M0^M1 at clock 0, bit 2 = S0^S1 at clock 0, bit 3 =
+    // M0^M1 at clock 1.
+    uint8_t pack_dport3(const Inputs &in) const {
+        if (!in.set) {
+            return 0;
+        }
+        return pack_byte({
+            in.saturation,                                   // 0  SAT, or the one-shot's pulse
+            !in.held,                                        // 1  not held at both ARU clocks 1 and 2
+            bit(in.aru_history, 0),                          // 2  S0^S1 at clock 1
+            bit(in.aru_history, 2),                          // 3  S0^S1 at clock 0
+            bit(in.aru_history, 1),                          // 4  M0^M1 at clock 0
+            bit(in.aru_history, 3),                          // 5  M0^M1 at clock 1
+            bit(in.word, 30) != bit(in.word, 31),            // 6  c4^c5 of the microinstruction at the marker
+            !decode(in.word, model).zero,                    // 7  ZERO/
+        });
     }
 
     // Each ARU clock shifts {S0^S1, M0^M1, SAT} into U9 (through the XORs U12):
@@ -172,28 +226,15 @@ private:
     void sample_dport3(const Aruck (&clocked)[3], Tick row_marker) {
         bool saturation = last_sat_sample || pulse_active(row_marker + dport3_sample);
         bool held = clocked[1].operand == OperandClock::Hold && clocked[2].operand == OperandClock::Hold;
-        uint32_t word = marker_microinstruction;
-        // aru_history as of now (after ARU clocks 0 and 1): bit 0 = S0^S1 at
-        // clock 1, bit 1 = M0^M1 at clock 0, bit 2 = S0^S1 at clock 0, bit 3 =
-        // M0^M1 at clock 1.
-        dport3.set(pack_byte({
-                       saturation,                                      // 0  SAT, or the one-shot's pulse
-                       !held,                                           // 1  not held at both ARU clocks 1 and 2
-                       bit(aru_history, 0),                             // 2  S0^S1 at clock 1
-                       bit(aru_history, 2),                             // 3  S0^S1 at clock 0
-                       bit(aru_history, 1),                             // 4  M0^M1 at clock 0
-                       bit(aru_history, 3),                             // 5  M0^M1 at clock 1
-                       bit(word, 30) != bit(word, 31),                  // 6  c4^c5 of the microinstruction at the marker
-                       !decode(word, model).zero,                              // 7  ZERO/
-                   }),
-                   scheduler.now(), row_marker + dport3_visible);
+        dport3.set({marker_microinstruction, false, saturation, held, aru_history, true}, scheduler.now(),
+                   row_marker + dport3_visible);
     }
 
     const Scheduler &scheduler;
     uint32_t marker_microinstruction = 0;
-    DelayedRegister dport3;     // the arithmetic monitor [arithmeticMonitor]
-    uint8_t dport4 = 0;         // the microinstruction monitor [instructionMonitor]
-    DelayedRegister dport5;     // the timing monitor [timingMonitor]
+    DelayedInputs dport3;       // the arithmetic monitor [arithmeticMonitor]
+    Inputs dport4;              // the microinstruction monitor [instructionMonitor]
+    DelayedInputs dport5;       // the timing monitor [timingMonitor]
     uint8_t aru_history = 0;    // shift register U9: the ARU bit-stream history DPORT3 shows
     bool last_sat_sample = false;
     Tick retrigger_time = first_marker, pulse_start = 0, pulse_end = 0;

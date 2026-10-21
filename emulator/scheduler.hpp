@@ -17,8 +17,11 @@
 // DSP side goes first.
 #include "timing.hpp"
 #include <algorithm>
-#include <functional>
+#include <cstddef>
+#include <new>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace lexicon224x::cpu {
@@ -27,7 +30,95 @@ enum class RowPhase { Begin, ExecutePrevious, Fetch, ResetDecode, Converter };
 
 class Scheduler {
 public:
+    // A one-shot action a board schedules: a callable stored inline, never on
+    // the heap, so that scheduling costs no allocation (the plugin runs the
+    // machine in the audio callback). std::function would do, but libc++ keeps
+    // only 16 bytes of captures inline, and the boards' lambdas capture more.
+    // A capture too big for `capacity` is a compile error, not a heap fallback.
+    // Nested, so the name stays out of the namespace (code that uses the
+    // namespace has its own Actions).
+    class Action {
+    public:
+        static constexpr size_t capacity = 128;
+
+        Action() = default;
+
+        template <class F, class = std::enable_if_t<!std::is_same_v<std::decay_t<F>, Action>>>
+        Action(F &&f) {
+            using T = std::decay_t<F>;
+            static_assert(sizeof(T) <= capacity, "Action: capture too large; raise capacity");
+            static_assert(alignof(T) <= alignof(std::max_align_t), "Action: over-aligned capture");
+            static_assert(std::is_nothrow_move_constructible_v<T>, "Action: capture must move without throwing");
+            new (storage_) T(std::forward<F>(f));
+            ops_ = &ops_for<T>;
+        }
+
+        Action(Action &&other) noexcept {
+            take(other);
+        }
+
+        Action &operator=(Action &&other) noexcept {
+            if (this != &other) {
+                reset();
+                take(other);
+            }
+            return *this;
+        }
+
+        Action(const Action &) = delete;
+        Action &operator=(const Action &) = delete;
+
+        ~Action() {
+            reset();
+        }
+
+        void operator()() {
+            ops_->call(storage_);
+        }
+
+    private:
+        struct Ops {
+            void (*call)(void *);
+            void (*move)(void *to, void *from);     // move-construct at `to`, destroy `from`
+            void (*destroy)(void *);
+        };
+
+        template <class T>
+        static constexpr Ops ops_for = {
+            [](void *p) { (*static_cast<T *>(p))(); },
+            [](void *to, void *from) {
+                new (to) T(std::move(*static_cast<T *>(from)));
+                static_cast<T *>(from)->~T();
+            },
+            [](void *p) { static_cast<T *>(p)->~T(); },
+        };
+
+        void take(Action &other) {
+            if (other.ops_ != nullptr) {
+                other.ops_->move(storage_, other.storage_);
+                ops_ = other.ops_;
+                other.ops_ = nullptr;
+            }
+        }
+
+        void reset() {
+            if (ops_ != nullptr) {
+                ops_->destroy(storage_);
+                ops_ = nullptr;
+            }
+        }
+
+        alignas(std::max_align_t) unsigned char storage_[capacity];
+        const Ops *ops_ = nullptr;
+    };
+
     RowTiming timing = timing_224x;     // the model's row timing (timing.hpp); set before the first step
+
+    // Room for the pending actions up front: a handful are pending at any
+    // time, so the heap never grows while the machine runs.
+    Scheduler() {
+        events.reserve(256);
+    }
 
     Tick now() const {
         return time;
@@ -35,7 +126,7 @@ public:
 
     // Schedule `action` at `when` (not in the past). A late action runs after
     // the row phases and the other actions at the same time.
-    void at(Tick when, std::function<void()> action, bool late = false) {
+    void at(Tick when, Action action, bool late = false) {
         if (when < time) {
             throw std::logic_error("event scheduled in the past");
         }
@@ -55,7 +146,7 @@ public:
     template <class RunPhase, class RunCpu>
     bool step_one(Tick deadline, RunPhase &&run_phase, RunCpu &&run_cpu) {
         RowPhase kind = phase_kinds[phase];
-        Tick phase_time = timing.marker(row_index) + offset_of(kind);
+        Tick phase_time = next_phase_time();
         uint64_t acting_row = row_index;
         if (kind == RowPhase::ExecutePrevious) {
             acting_row = row_index - 1;
@@ -102,7 +193,7 @@ public:
         // phase goes first, as above.) Any effect a phase schedules sends the
         // choice back through the general rule.
         while (events.empty()) {
-            Tick next = timing.marker(row_index) + offset_of(phase_kinds[phase]);
+            Tick next = next_phase_time();
             if (next > deadline || cpu_time < next) {
                 break;
             }
@@ -149,7 +240,7 @@ private:
         uint64_t serial;        // creation order
         Tick created;
         bool late;
-        std::function<void()> action;
+        Action action;
     };
 
     // Heap order: earlier time first, then late ones last, then creation order.
@@ -171,13 +262,28 @@ private:
         if (kind == RowPhase::ExecutePrevious) {
             acting_row = row_index - 1;
         }
-        time = timing.marker(row_index) + offset_of(kind);
+        time = next_phase_time();
         phase++;
         if (phase == phase_count) {
             phase = 0;
             row_index++;
         }
         run_phase(kind, acting_row);
+    }
+
+    // When the next phase runs: its row's marker plus its offset. Asked for
+    // every phase (17 M a second), so the row's marker and the offsets are
+    // kept, and refreshed when the row changes (from `timing`, which is set
+    // before the first step).
+    Tick next_phase_time() {
+        if (cached_row != row_index) {
+            cached_marker = timing.marker(row_index);
+            for (unsigned p = 0; p < phase_count; p++) {
+                cached_offsets[p] = offset_of(phase_kinds[p]);
+            }
+            cached_row = row_index;
+        }
+        return cached_marker + cached_offsets[phase];
     }
 
     // When a row's phases were (conceptually) scheduled: at the previous row's marker.
@@ -192,6 +298,9 @@ private:
     Tick cpu_time = ~Tick(0);   // the CPU's next state (none until set)
     uint64_t row_index = 0;     // the row whose window the next phase is in
     unsigned phase = 0;
+    uint64_t cached_row = ~uint64_t(0);     // next_phase_time()'s row (none yet)
+    Tick cached_marker = 0;
+    Tick cached_offsets[phase_count] = {};
     std::vector<Event> events;  // a min-heap by (time, creation order)
     uint64_t serial = 0;
 };
