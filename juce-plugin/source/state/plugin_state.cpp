@@ -15,14 +15,18 @@ namespace {
 
 // Numbers are written and read in the "C" locale whatever the host set
 // (a host in a comma-decimal locale must not change the blob). The MSVC
-// CRT spells the same calls with an underscore.
+// CRT has the same calls with an underscore, the locale after the format.
 #ifdef _WIN32
 _locale_t cLocale() {
     static _locale_t locale = _create_locale(LC_ALL, "C");
     return locale;
 }
-#define snprintf_l _snprintf_l
-#define strtof_l _strtof_l
+int snprintf_l(char *text, size_t size, _locale_t locale, const char *format, double value) {
+    return _snprintf_l(text, size, format, locale, value);
+}
+float strtof_l(const char *text, char **end, _locale_t locale) {
+    return _strtof_l(text, end, locale);
+}
 #else
 locale_t cLocale() {
     static locale_t locale = newlocale(LC_ALL_MASK, "C", nullptr);
