@@ -3,18 +3,32 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#ifdef _WIN32
+#include <locale.h>
+#else
 #include <xlocale.h>
+#endif
 
 namespace lexstate {
 
 namespace {
 
 // Numbers are written and read in the "C" locale whatever the host set
-// (a host in a comma-decimal locale must not change the blob).
+// (a host in a comma-decimal locale must not change the blob). The MSVC
+// CRT spells the same calls with an underscore.
+#ifdef _WIN32
+_locale_t cLocale() {
+    static _locale_t locale = _create_locale(LC_ALL, "C");
+    return locale;
+}
+#define snprintf_l _snprintf_l
+#define strtof_l _strtof_l
+#else
 locale_t cLocale() {
     static locale_t locale = newlocale(LC_ALL_MASK, "C", nullptr);
     return locale;
 }
+#endif
 
 std::string formatFloat(float value) {
     char text[48];
