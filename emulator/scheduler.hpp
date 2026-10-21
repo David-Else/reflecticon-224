@@ -18,6 +18,7 @@
 #include "timing.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <type_traits>
@@ -88,9 +89,9 @@ public:
             [](void *p) { (*static_cast<T *>(p))(); },
             [](void *to, void *from) {
                 new (to) T(std::move(*static_cast<T *>(from)));
-                static_cast<T *>(from)->~T();
+                std::destroy_at(static_cast<T *>(from));
             },
-            [](void *p) { static_cast<T *>(p)->~T(); },
+            [](void *p) { std::destroy_at(static_cast<T *>(p)); },
         };
 
         void take(Action &other) {
