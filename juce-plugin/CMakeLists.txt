@@ -1,5 +1,5 @@
 # The plugin around the row machine and its 8080 host (macOS: AU, VST3,
-# Standalone). See README.md.
+# Standalone; Windows: VST3, Standalone). See README.md.
 #
 #   cmake -S . -B build-a -G Ninja \
 #         -DFETCHCONTENT_SOURCE_DIR_JUCE=/path/to/JUCE
@@ -21,7 +21,7 @@ set(PLUGIN_CODE Rf24)
 set(PLUGIN_BUNDLE_ID "net.joelanders.reflexion224")
 set(PLUGIN_TARGET Reflexion224)
 
-project(${PLUGIN_TARGET} VERSION 0.1.0 LANGUAGES C CXX)
+project(${PLUGIN_TARGET} VERSION 0.1.1 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
@@ -37,8 +37,17 @@ endif()
 
 # Byte-exactness with the web build: no fused multiply-adds anywhere (the
 # analog boards' filters are double-precision recurrences), and never
-# -ffast-math. Applies to every target below, JUCE's included.
-add_compile_options(-ffp-contract=off)
+# -ffast-math. Applies to every target below, JUCE's included. MSVC's
+# /fp:precise does not contract unless /fp:contract is also given (VS 2022);
+# its <complex> and libm are not libc++'s, so Windows output can still differ
+# in the last bits from the macOS and web builds.
+if(MSVC)
+    add_compile_options(/fp:precise /bigobj /utf-8)
+    # The static CRT: the plugin and the app need no VC++ redistributable.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+else()
+    add_compile_options(-ffp-contract=off)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(JUCE
@@ -55,7 +64,7 @@ target_include_directories(lexplug_engine INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/plugin
     ${CMAKE_CURRENT_SOURCE_DIR}/../analog)
 # Debug info in every build type, for the RT-allocation test's call sites.
-target_compile_options(lexplug_engine INTERFACE -g)
+target_compile_options(lexplug_engine INTERFACE $<IF:$<CXX_COMPILER_ID:MSVC>,/Z7,-g>)
 
 juce_add_plugin(${PLUGIN_TARGET}
     PRODUCT_NAME "${PLUGIN_PRODUCT_NAME}"
@@ -145,7 +154,7 @@ target_link_libraries(rt_alloc PRIVATE ${PLUGIN_TARGET} juce::juce_audio_utils)
 # The rate bridge alone (no machine, no JUCE): latency and continuity at every rate.
 add_executable(bridge_check tests/byte_exact/bridge_check.cpp)
 target_link_libraries(bridge_check PRIVATE lexplug_engine)
-target_compile_options(bridge_check PRIVATE -O2)
+target_compile_options(bridge_check PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/O2,-O2>)
 
 # Offline == realtime: one host automation timeline through the processor in
 # several block schemes, realtime and non-realtime; the outputs must agree bit

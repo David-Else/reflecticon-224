@@ -1,6 +1,7 @@
 # The plugin for macOS (AU, VST3 and the standalone app), universal (Apple
-# silicon and Intel), ad-hoc signed. A tag v* publishes it as a prerelease;
-# a manual run only keeps the zip as a workflow artifact.
+# silicon and Intel), ad-hoc signed; and for Windows x64 (VST3 and the
+# standalone app), unsigned. A tag v* publishes both as one prerelease; a
+# manual run only keeps the zips as workflow artifacts.
 name: Plugin
 
 on:
@@ -11,12 +12,14 @@ on:
 permissions:
   contents: write
 
+env:
+  JUCE_VERSION: "8.0.14"
+
 jobs:
   macos:
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      JUCE_VERSION: "8.0.14"
       JUCE_DIR: ${{ github.workspace }}/../JUCE
     steps:
       - uses: actions/checkout@v5
@@ -66,23 +69,101 @@ jobs:
           name: ${{ env.NAME }}
           path: package/${{ env.NAME }}.zip*
 
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      JUCE_DIR: ${{ github.workspace }}\..\JUCE
+      PLUGINVAL_VERSION: "v1.0.4"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache JUCE
+        id: juce
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.JUCE_DIR }}
+          key: juce-windows-${{ env.JUCE_VERSION }}
+
+      - name: Fetch JUCE
+        if: steps.juce.outputs.cache-hit != 'true'
+        run: git clone --depth 1 --branch "$JUCE_VERSION" https://github.com/juce-framework/JUCE.git "$(cygpath -u "$JUCE_DIR")"
+
+      - name: Build
+        run: |
+          cmake -S juce-plugin -B juce-plugin/build -G "Visual Studio 17 2022" -A x64 \
+            -DFETCHCONTENT_SOURCE_DIR_JUCE="$(cygpath -m "$JUCE_DIR")"
+          cmake --build juce-plugin/build --config Release --parallel 4 \
+            --target Reflexion224_VST3 Reflexion224_Standalone
+
+      # No ROMs here: the plugin boots nothing and passes the audio through
+      # dry, which is enough to check that a host can load, run and save it.
+      - name: Validate the VST3
+        run: |
+          curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Windows.zip"
+          unzip -q pluginval.zip -d pluginval
+          ./pluginval/pluginval.exe --strictness-level 5 --skip-gui-tests --timeout-ms 300000 \
+            --validate juce-plugin/build/Reflexion224_artefacts/Release/VST3/Reflexion224.vst3
+
+      - name: Package
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="dev-${GITHUB_SHA::7}"; fi
+          name="Reflexion224-$version-Windows-x64"
+          built=juce-plugin/build/Reflexion224_artefacts/Release
+          mkdir -p "package/$name"
+          cp -R "$built/VST3/Reflexion224.vst3" "package/$name/"
+          cp "$built/Standalone/Reflexion224.exe" "package/$name/"
+          (cd package && 7z a -tzip -mx=9 "$name.zip" "$name" > /dev/null && sha256sum "$name.zip" > "$name.zip.sha256")
+          cat package/*.sha256
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: package/${{ env.NAME }}.zip*
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Reflexion224-*
+          path: package
+          merge-multiple: true
+
       - name: Publish the prerelease
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
           files: |
-            package/${{ env.NAME }}.zip
-            package/${{ env.NAME }}.zip.sha256
+            package/Reflexion224-${{ github.ref_name }}-macOS.zip
+            package/Reflexion224-${{ github.ref_name }}-macOS.zip.sha256
+            package/Reflexion224-${{ github.ref_name }}-Windows-x64.zip
+            package/Reflexion224-${{ github.ref_name }}-Windows-x64.zip.sha256
           fail_on_unmatched_files: true
           body: |
-            An alpha build for testing. macOS 11 or later, Apple silicon or Intel. It contains no firmware.
+            An alpha build for testing. It contains no firmware: open the plugin, click **Choose ROMs...** and pick the folder or `.zip` with your own Lexicon chip files. Until then it passes the audio through dry.
 
-            The bundles are ad-hoc signed and not notarized, so macOS quarantines them after a download and refuses to open them.
+            ### macOS
 
-            1. Unzip. Then clear the quarantine on the unzipped folder by running this in Terminal (change the path if the folder is somewhere else):
+            macOS 11 or later, Apple silicon or Intel. The bundles are ad-hoc signed and not notarized, so macOS quarantines them after a download and refuses to open them.
+
+            1. Unzip `Reflexion224-${{ github.ref_name }}-macOS.zip`. Then clear the quarantine on the unzipped folder by running this in Terminal (change the path if the folder is somewhere else):
                ```
-               xattr -cr ~/Downloads/${{ env.NAME }}
+               xattr -cr ~/Downloads/Reflexion224-${{ github.ref_name }}-macOS
                ```
             2. Copy `Reflexion224.component` to `~/Library/Audio/Plug-Ins/Components`, `Reflexion224.vst3` to `~/Library/Audio/Plug-Ins/VST3`, and `Reflexion224.app` wherever you like.
-            3. Restart your host or rescan its plug-ins. Open the plugin, click **Choose ROMs...** and pick the folder or `.zip` with your own Lexicon chip files. Until then it passes the audio through dry.
+            3. Restart your host or rescan its plug-ins.
+
+            ### Windows
+
+            Windows 10 or later, x64. The plugin and app are not code-signed, so SmartScreen may warn when the app is first opened: click **More info**, then **Run anyway**.
+
+            1. Unzip `Reflexion224-${{ github.ref_name }}-Windows-x64.zip`.
+            2. Copy the `Reflexion224.vst3` folder to `C:\Program Files\Common Files\VST3`, and `Reflexion224.exe` wherever you like.
+            3. Restart your host or rescan its plug-ins.
