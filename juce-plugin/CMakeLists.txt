@@ -1,5 +1,5 @@
 # The plugin around the row machine and its 8080 host (macOS: AU, VST3,
-# Standalone; Windows: VST3, Standalone). See README.md.
+# Standalone; Windows and Linux: VST3, Standalone). See README.md.
 #
 #   cmake -S . -B build-a -G Ninja \
 #         -DFETCHCONTENT_SOURCE_DIR_JUCE=/path/to/JUCE
@@ -114,6 +114,9 @@ add_library(lexplug_model STATIC
     source/catalog/share.cpp
     source/state/plugin_state.cpp)
 target_include_directories(lexplug_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/source/catalog)
+# It is linked into the VST3 shared module: Linux's linker refuses a
+# non-PIC static library there.
+set_target_properties(lexplug_model PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_sources(${PLUGIN_TARGET} PRIVATE
     plugin/PluginProcessor.cpp
