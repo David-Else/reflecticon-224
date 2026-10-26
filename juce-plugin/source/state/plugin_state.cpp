@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#if defined(_WIN32) || !defined(__APPLE__)
+#if !defined(__APPLE__)
 #include <locale.h>
 #else
 #include <xlocale.h>

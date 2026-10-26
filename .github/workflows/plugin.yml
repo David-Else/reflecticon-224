@@ -105,6 +105,7 @@ jobs:
       - name: Validate the VST3
         run: |
           curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Windows.zip"
+          echo "c08e61ce3b96db41636f8ec7e76f4c7e2c13ebdac7fa1b5a1f52b4f32ec715ab  pluginval.zip" | sha256sum -c
           unzip -q pluginval.zip -d pluginval
           ./pluginval/pluginval.exe --strictness-level 5 --skip-gui-tests --timeout-ms 300000 \
             --validate juce-plugin/build/Reflexion224_artefacts/Release/VST3/Reflexion224.vst3
@@ -172,6 +173,7 @@ jobs:
       - name: Validate the VST3
         run: |
           curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Linux.zip"
+          echo "c01c49d8063965c4c2dea8324468336768f5c9139e0b1caebde14c2400b55352  pluginval.zip" | sha256sum -c
           unzip -q pluginval.zip -d pluginval
           xvfb-run --auto-servernum ./pluginval/pluginval --strictness-level 5 --skip-gui-tests --timeout-ms 300000 \
             --validate juce-plugin/build/Reflexion224_artefacts/Release/VST3/Reflexion224.vst3
