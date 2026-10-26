@@ -1,6 +1,9 @@
 #!/bin/sh
 # pgo_train.sh — a clang PGO profile for the machine, from the speed gate on
-# your own ROMs. Writes pgo/plugin.profdata; then configure a release build with
+# your own ROMs. Writes pgo/plugin.profdata, and its text form pgo/plugin.proftext,
+# which is committed: the release workflow indexes it with the runner's own
+# llvm-profdata (the text form reads under any LLVM version). Locally,
+# configure a release build with
 #
 #   cmake -S . -B build-pgo -G Ninja -DLEXPLUG_PGO_PROFILE="$PWD/pgo/plugin.profdata" ...
 #
@@ -11,7 +14,8 @@
 # timeline. The gate is compiled standalone, instrumented, with the plugin's
 # machine flags (-O3 -std=c++20 -ffp-contract=off): the profile keys on the
 # machine's functions, which the plugin's translation units share. The .profdata
-# holds function names and counts, no ROM bytes. pgo/ is not committed.
+# holds function names and counts, no ROM bytes. Of pgo/, only the text
+# profile is committed.
 # macOS only (Apple clang and the AudioToolbox framework the gate links).
 set -eu
 cd "$(dirname "$0")/.."
@@ -41,4 +45,5 @@ done
 if [ "$n" = 0 ]; then echo "no firmware set found under $FW" >&2; exit 1; fi
 PROFDATA="$(xcrun -f llvm-profdata 2>/dev/null || command -v llvm-profdata)"
 "$PROFDATA" merge -output=pgo/plugin.profdata pgo/*.profraw
-echo "wrote pgo/plugin.profdata from $n set(s)"
+"$PROFDATA" merge -text -output=pgo/plugin.proftext pgo/*.profraw
+echo "wrote pgo/plugin.profdata and pgo/plugin.proftext from $n set(s)"

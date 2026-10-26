@@ -36,11 +36,16 @@ jobs:
         if: steps.juce.outputs.cache-hit != 'true'
         run: git clone --depth 1 --branch "$JUCE_VERSION" https://github.com/juce-framework/JUCE.git "$JUCE_DIR"
 
+      # The machine's PGO profile (juce-plugin/pgo/plugin.proftext, trained by
+      # scripts/pgo_train.sh; function names and counts, no ROM bytes), indexed
+      # by this runner's own llvm-profdata: about 8% less CPU per block.
       - name: Build
         run: |
+          xcrun llvm-profdata merge -output=juce-plugin/build-profile.profdata juce-plugin/pgo/plugin.proftext
           cmake -S juce-plugin -B juce-plugin/build -G "Unix Makefiles" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-            -DFETCHCONTENT_SOURCE_DIR_JUCE="$JUCE_DIR"
+            -DFETCHCONTENT_SOURCE_DIR_JUCE="$JUCE_DIR" \
+            -DLEXPLUG_PGO_PROFILE="$PWD/juce-plugin/build-profile.profdata"
           cmake --build juce-plugin/build -j "$(sysctl -n hw.ncpu)" \
             --target Reflexion224_AU Reflexion224_VST3 Reflexion224_Standalone
 
