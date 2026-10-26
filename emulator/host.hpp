@@ -99,6 +99,7 @@ public:
         pins = i8080_init(&cpu);
         scheduler.set_cpu_time(state_start(0) + phi2_rise);
         dsp->model = model;
+        redecode_wcs(*dsp);
         if (model == Model::Lexicon224) {
             scheduler.timing = timing_224;
         }
@@ -169,8 +170,30 @@ public:
     void run_until(uint64_t deadline) {
         run_deadline = deadline;
         stop_requested = at_instruction_boundary() && cycles >= deadline;
-        while (!stop_requested) {
-            step_one(~Tick(0));
+        if (trace) {
+            // Traced: one timeline, everything in time order, as the lenses expect.
+            while (!stop_requested) {
+                step_one(~Tick(0));
+            }
+        } else {
+            // The CPU runs ahead through its own board's bus cycles (ROM, RAM,
+            // the control head, the LARC): nothing on the DSP boards can see
+            // those, and what they schedule for the boards carries its time.
+            // A cycle that reaches the WCS or ports 0-9 first brings the DSP
+            // up to the state's time (phases and effects at or before it, as
+            // the single timeline orders them: the DSP side first at a tie)
+            // and then runs in step with it. The DSP never runs ahead of the
+            // CPU, so a request is always made before the marker that grants it.
+            while (!stop_requested) {
+                Tick state_time = scheduler.next_cpu_time();
+                if (bus.board != Board::Sbc) {
+                    scheduler.run_dsp_until(state_time, [this](RowPhase kind, uint64_t row_number) {
+                        run_row_phase(kind, row_number);
+                    });
+                }
+                scheduler.enter_cpu_state();
+                cpu_state();
+            }
         }
         advance(cycles);
     }
@@ -222,8 +245,9 @@ private:
     // Run the DSP rows and bus effects up to `deadline` (the CPU's next state
     // is later). The LARC's serial line keeps the same time.
     void advance_ticks(Tick deadline) {
-        while (step_one(deadline)) {
-        }
+        scheduler.run_dsp_until(deadline, [this](RowPhase kind, uint64_t row_number) {
+            run_row_phase(kind, row_number);
+        });
         scheduler.stand_at(deadline);
         remote.advance(scheduler.now() / cpu_period);
     }
@@ -234,8 +258,10 @@ private:
 
     // ---- DSP rows: the T&C's row phases -----------------------------------------------
     uint32_t marker_microinstruction = 0;  // the MI at this row's marker (fetched in the previous row)
+    bool marker_protect = false, marker_reset = false;   // ... its protect and RESET bits
 
-    void run_row_phase(RowPhase kind, uint64_t row_number) {
+    // Inlined into the scheduler's whole-row path, where `kind` is a constant.
+    LEXICON_ALWAYS_INLINE void run_row_phase(RowPhase kind, uint64_t row_number) {
         if (trace) {
             trace->row_phase(scheduler.now(), kind, row_number);
         }
@@ -262,7 +288,7 @@ private:
                 if (dsp->model == Model::Lexicon224) {
                     dmem.on_reset_n(dsp->mi.reset);
                 } else {
-                    dmem.on_reset_n(decode(marker_microinstruction, dsp->model).reset);
+                    dmem.on_reset_n(marker_reset);
                 }
                 break;
             case RowPhase::Converter:
@@ -272,25 +298,28 @@ private:
     }
 
     // The row marker: the diagnostics sample, and the T&C grants CPU requests.
-    void begin_row() {
+    LEXICON_ALWAYS_INLINE void begin_row() {
         marker_microinstruction = dsp->microinstruction;
+        marker_protect = dsp->mi.protect;
+        marker_reset = dsp->mi.reset;
         diagnostics.at_marker(marker_microinstruction, dsp->finishing.negative);
-        wcs_access.at_marker(marker_microinstruction, dmem.run_level_high());
+        wcs_access.at_marker(marker_protect, dmem.run_level_high());
     }
 
     // The fetch, unless a granted CPU access displaces it.
-    void fetch_row(uint64_t row_number) {
+    LEXICON_ALWAYS_INLINE void fetch_row(uint64_t row_number) {
         dsp->run = dmem.run_level_high();
-        uint32_t previous = dsp->microinstruction;
+        bool previous_protect = dsp->mi.protect;
+        bool previous_reset = dsp->mi.reset;
         bool displaced = wcs_access.displaced(scheduler.timing.marker(row_number));
         fetch(*dsp, displaced);
-        wcs_access.at_fetch(previous, dsp->microinstruction);
+        wcs_access.at_fetch(previous_protect, previous_reset, dsp->mi.protect);
         if (trace && displaced) {
             trace->fetch_displaced(scheduler.now(), row_number);
         }
     }
 
-    void converter_row() {
+    LEXICON_ALWAYS_INLINE void converter_row() {
         dsp->xreg_from_cpu = dmem.xreg_to_dsp();  // what the XREG input bank drives for WR_DA now
         bool ch1_before = dsp->fpc.ch1;
         converter_clock(*dsp);
@@ -319,12 +348,18 @@ private:
     // three edges of this row. A CPU WCS access can hold the operand register
     // on any of them: edge 0 is the older multiply's second shift, edge 1 this
     // one's load, edge 2 its first shift.
-    void execute_row(uint64_t row_number) {
+    LEXICON_ALWAYS_INLINE void execute_row(uint64_t row_number) {
         Tick next_marker = scheduler.timing.marker(row_number + 1);
         dmem.at_execute(next_marker, *dsp);
         dsp->xreg_from_cpu = dmem.xreg_to_dsp();
-        for (unsigned edge = 0; edge < 3; edge++) {
-            dsp->operand_held[edge] = wcs_access.held(scheduler.timing.aruck_edge(next_marker, edge));
+        if (next_marker > wcs_access.holds_end()) {
+            for (unsigned edge = 0; edge < 3; edge++) {
+                dsp->operand_held[edge] = false;    // what held() answers past the window
+            }
+        } else {
+            for (unsigned edge = 0; edge < 3; edge++) {
+                dsp->operand_held[edge] = wcs_access.held(scheduler.timing.aruck_edge(next_marker, edge));
+            }
         }
         execute(*dsp);
         if (row_observer) {

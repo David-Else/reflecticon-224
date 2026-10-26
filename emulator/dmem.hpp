@@ -61,7 +61,7 @@ public:
     // ---- Inputs ----
 
     // The T&C drives RESET_N (low on an OPER RESET row).
-    void on_reset_n(bool low) {
+    LEXICON_ALWAYS_INLINE void on_reset_n(bool low) {
         if (low && reset_n) {
             reset_edges++;
         }
@@ -138,7 +138,7 @@ public:
     // Before a microinstruction's memory access at `next_marker` (already past):
     // a clear that has happened zeroes the counter, and one still active
     // then stops it advancing.
-    void at_execute(Tick next_marker, Machine &dsp) {
+    LEXICON_ALWAYS_INLINE void at_execute(Tick next_marker, Machine &dsp) {
         if (cpc_cleared_at && *cpc_cleared_at <= next_marker) {
             dsp.cpc = 0;
             cpc_cleared_at.reset();

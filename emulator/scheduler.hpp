@@ -203,6 +203,75 @@ public:
         return true;
     }
 
+    // The DSP side alone: run every row phase and bus effect at or before
+    // `deadline`, in the same order step_one() would, without the CPU's
+    // state (the backplane runs the CPU on its own and brings the DSP up to
+    // date when a bus cycle reaches it). Phases go to run_phase(RowPhase, row_number).
+    template <class RunPhase>
+    void run_dsp_until(Tick deadline, RunPhase &&run_phase) {
+        while (true) {
+            // A whole row at once (the common case: no bus effect waiting, the
+            // row's last phase before the deadline): its five phases in
+            // order with the phase kind a constant, so the host's dispatch
+            // folds away. A phase that schedules an effect hands the rest of
+            // the row to the general rule below.
+            if (phase == 0 && events.empty()) {
+                Tick marker = next_phase_time();
+                if (marker + cached_offsets[phase_count - 1] <= deadline) {
+                    uint64_t row = row_index;
+                    if (whole_row_phase(marker, RowPhase::Begin, row, run_phase) &&
+                        whole_row_phase(marker, RowPhase::ExecutePrevious, row - 1, run_phase) &&
+                        whole_row_phase(marker, RowPhase::Fetch, row, run_phase) &&
+                        whole_row_phase(marker, RowPhase::ResetDecode, row, run_phase)) {
+                        whole_row_phase(marker, RowPhase::Converter, row, run_phase);
+                    }
+                    continue;
+                }
+            }
+            RowPhase kind = phase_kinds[phase];
+            Tick phase_time = next_phase_time();
+            if (!events.empty()) {
+                const Event &e = events.front();
+                uint64_t acting_row = row_index;
+                if (kind == RowPhase::ExecutePrevious) {
+                    acting_row = row_index - 1;
+                }
+                if (e.time < phase_time || (e.time == phase_time && !e.late && e.created < phase_created(acting_row))) {
+                    if (e.time > deadline) {
+                        return;
+                    }
+                    std::pop_heap(events.begin(), events.end(), fires_after);
+                    Event next = std::move(events.back());
+                    events.pop_back();
+                    time = next.time;
+                    next.action();
+                    continue;
+                }
+            }
+            if (phase_time > deadline) {
+                return;
+            }
+            run_next_phase(run_phase);
+            // While no bus effect is waiting, the phases run back to back.
+            while (events.empty()) {
+                Tick next = next_phase_time();
+                if (next > deadline) {
+                    break;
+                }
+                run_next_phase(run_phase);
+            }
+        }
+    }
+
+    // When the CPU's next state runs (set_cpu_time), and the clock moved there.
+    Tick next_cpu_time() const {
+        return cpu_time;
+    }
+
+    void enter_cpu_state() {
+        time = cpu_time;
+    }
+
     // The row phase that runs next (a lens asks where in the row the DSP stands).
     RowPhase next_phase() const {
         return phase_kinds[phase];
@@ -219,6 +288,10 @@ private:
         RowPhase::Begin, RowPhase::ExecutePrevious, RowPhase::Fetch, RowPhase::ResetDecode, RowPhase::Converter,
     };
     static constexpr unsigned phase_count = sizeof phase_kinds / sizeof phase_kinds[0];
+    // ... in the enum's own order, so a kind is its index (whole_row_phase).
+    static_assert(unsigned(RowPhase::Begin) == 0 && unsigned(RowPhase::ExecutePrevious) == 1 &&
+                  unsigned(RowPhase::Fetch) == 2 && unsigned(RowPhase::ResetDecode) == 3 &&
+                  unsigned(RowPhase::Converter) == 4);
 
     Tick offset_of(RowPhase kind) const {
         switch (kind) {
@@ -253,6 +326,23 @@ private:
             return a.late;
         }
         return a.serial > b.serial;
+    }
+
+    // One phase of the whole-row path (run_dsp_until): the clock at the
+    // phase's time, run_next_phase()'s bookkeeping, then the phase, which
+    // the caller names with a constant. Whether the row may go on: a phase
+    // that scheduled a bus effect leaves the rest to the general rule.
+    template <class RunPhase>
+    bool whole_row_phase(Tick marker, RowPhase kind, uint64_t acting_row, RunPhase &run_phase) {
+        unsigned index = unsigned(kind);
+        time = marker + cached_offsets[index];
+        phase = index + 1;
+        if (phase == phase_count) {
+            phase = 0;
+            row_index++;
+        }
+        run_phase(kind, acting_row);
+        return events.empty();
     }
 
     // Run the phase that is due next, in the window it belongs to.

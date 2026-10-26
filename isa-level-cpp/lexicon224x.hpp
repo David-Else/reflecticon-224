@@ -171,7 +171,7 @@ struct TimingRom {
     bool load, conversion_clock, ch1, gain_strobe;
 };
 
-inline TimingRom timing_rom(unsigned address) {
+constexpr TimingRom timing_rom_entry(unsigned address) {
     if (address >= 100) {
         return {.gain_strobe = true};
     }
@@ -183,6 +183,22 @@ inline TimingRom timing_rom(unsigned address) {
         .ch1              = position >= 4 && position < 54,
         .gain_strobe      = (half + 12) % 50 < 13,
     };
+}
+
+// The ROM's 256 entries (the count saturates at 255), looked up per row:
+// timing_rom_entry's five divisions were 2% of the plugin's time.
+struct TimingRomTable {
+    TimingRom entry[256];
+    constexpr TimingRomTable() : entry{} {
+        for (unsigned a = 0; a < 256; a++) {
+            entry[a] = timing_rom_entry(a);
+        }
+    }
+};
+inline constexpr TimingRomTable timing_rom_table{};
+
+inline TimingRom timing_rom(unsigned address) {
+    return timing_rom_table.entry[address & 255];
 }
 
 // The input LS194s. The ROM's load strobe and the gain counter's bit 2 pick
@@ -285,6 +301,11 @@ struct Aruck {
 struct Machine {
     Model model = Model::Lexicon224X;
     uint32_t wcs[128] = {};
+    // wcs[] decoded, filled as rows are fetched: decoded[a] is decode(decoded_word[a]).
+    // A fetch compares the word, so wcs[] may be written directly (load_wcs,
+    // the CPU's commits, tests) and a changed row is decoded once, not every pass.
+    Microinstruction decoded[128] = {};
+    uint32_t decoded_word[128] = {};
     unsigned pc = 0;
     uint32_t microinstruction = 0;  // the microinstruction register: the word this row executes
     Microinstruction mi = decode(0);  // ... decoded: the MI lines' fields
@@ -317,6 +338,14 @@ struct Machine {
     // Output of the last converter clock: the DAC holds took a sample.
     unsigned dac_channels = 0, dac_code = 0, dac_gain = 0;
 };
+
+// After the model changes: decode every word again under the new layout.
+inline void redecode_wcs(Machine &m) {
+    for (unsigned a = 0; a < 128; a++) {
+        m.decoded_word[a] = m.wcs[a];
+        m.decoded[a] = decode(m.wcs[a], m.model);
+    }
+}
 
 // The delay memory address of a MEMR or MEMW: CPC - offset. The field holds
 // the offset's complement, so this is CPC + field + 1: 16 bits on the 224X,
@@ -363,10 +392,16 @@ inline uint16_t source_value(const Machine &m, const Microinstruction &mi) {
 inline void fetch(Machine &m, bool displaced = false) {
     if (displaced) {
         m.microinstruction = 0;
+        m.mi = Microinstruction{};     // decode(0): every field zero
     } else {
-        m.microinstruction = m.wcs[m.pc];
+        uint32_t word = m.wcs[m.pc];
+        if (word != m.decoded_word[m.pc]) {
+            m.decoded_word[m.pc] = word;
+            m.decoded[m.pc] = decode(word, m.model);
+        }
+        m.microinstruction = word;
+        m.mi = m.decoded[m.pc];
     }
-    m.mi = decode(m.microinstruction, m.model);
 
     // The 224X clears the PC at the fetch after the RESET row's, so one more
     // row (the flush row) runs before the pass wraps. The 224's pass ends
@@ -433,8 +468,10 @@ inline int32_t settled_sum(const Machine &m) {
 // One edge: every register takes its new value from the others' old ones.
 // Returns the SAT pin for this edge's add.
 inline bool aruck(Machine &m, const Aruck &c) {
-    bool sat = overflows(m.ACC, m.partial, m.partial_negative);
-    int32_t sum = settled_sum(m);
+    // One add for the SAT pin and the clamped sum (what overflows() and settled_sum() compute).
+    int32_t raw = m.ACC + signed_product(m.partial, m.partial_negative);
+    bool sat = raw > AccMax || raw < AccMin;
+    int32_t sum = std::clamp(raw, AccMin, AccMax);
     m.partial = partial(m.operand, bit(c.pair, 1), bit(c.pair, 0));
     m.partial_negative = c.negative;
     if (c.operand == OperandClock::Load) {
