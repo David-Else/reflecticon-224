@@ -85,6 +85,11 @@ public:
     bool halted = false;
     std::unique_ptr<Machine> dsp = std::make_unique<Machine>();
     uint64_t audio_count = 0;
+    // Observers. The CPU runs ahead of the DSP between the bus cycles that
+    // join them (run_until), so a DSP-side observer (audio, row) sees
+    // `cycles`, the panel and the LARC in its future, and a CPU-side one
+    // (pc, port, wcs) sees the DSP in its past. Each event carries its own
+    // hardware time; read that, and the side the observer belongs to.
     std::function<void(const AudioEvent &)> audio_observer;
     std::function<void(const WcsWrite &)> wcs_observer;
     std::array<bool, 65536> pc_watches{};

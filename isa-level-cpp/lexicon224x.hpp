@@ -299,7 +299,7 @@ struct Aruck {
 };
 
 struct Machine {
-    Model model = Model::Lexicon224X;
+    Model model = Model::Lexicon224X;   // set before the first fetch (or call redecode_wcs after)
     uint32_t wcs[128] = {};
     // wcs[] decoded, filled as rows are fetched: decoded[a] is decode(decoded_word[a]).
     // A fetch compares the word, so wcs[] may be written directly (load_wcs,
