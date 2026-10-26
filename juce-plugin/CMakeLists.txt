@@ -21,7 +21,7 @@ set(PLUGIN_CODE Rf24)
 set(PLUGIN_BUNDLE_ID "net.joelanders.reflexion224")
 set(PLUGIN_TARGET Reflexion224)
 
-project(${PLUGIN_TARGET} VERSION 0.1.1 LANGUAGES C CXX)
+project(${PLUGIN_TARGET} VERSION 0.1.2 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
