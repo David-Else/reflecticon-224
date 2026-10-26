@@ -27,7 +27,7 @@ for pair in "224XL v8_21:xl821_1" "224X v8_1:x81_1" "224 v4.3:v43_1"; do
     if [ ! -d "$FW/$set_dir" ]; then echo "skip: no $FW/$set_dir"; continue; fi
     echo "== $set_dir $timeline ($SECONDS_PER_SET s)"
     LLVM_PROFILE_FILE="pgo/$timeline.profraw" pgo/speed_gate_instrumented "$FW/$set_dir" \
-        "build/timelines/$timeline.events" --block 128 --rate 48000 --seconds "$SECONDS_PER_SET" | tail -1
+        "tests/timelines/$timeline.events" --block 128 --rate 48000 --seconds "$SECONDS_PER_SET" | tail -1
     n=$((n + 1))
 done
 if [ "$n" = 0 ]; then echo "no firmware set found under $FW" >&2; exit 1; fi
