@@ -23,7 +23,9 @@
 #include <execinfo.h>
 #include <fstream>
 #include <map>
+#if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#endif
 #include <new>
 #include <sstream>
 #include <string>
@@ -234,8 +236,26 @@ std::vector<lexplug::ControlEvent> read_controls(const std::string &path, uint64
 }
 
 // Symbolize a stack with atos (file:line, inlined frames included), from
-// the allocating call up to Session::render.
+// the allocating call up to Session::render. Linux has no atos, so
+// backtrace_symbols() gives the module and offsets instead.
 std::string symbolize(void *const *frames, int depth) {
+#if !defined(__APPLE__)
+    std::string text;
+    char **symbols = backtrace_symbols(frames, depth);
+    if (symbols == nullptr) {
+        return "      (backtrace_symbols failed)\n";
+    }
+    for (int i = 2; i < depth; i++) {
+        text += "      ";
+        text += symbols[i];
+        text += "\n";
+        if (std::strstr(symbols[i], "lexplug::Session::render") != nullptr) {
+            break;
+        }
+    }
+    std::free(symbols);
+    return text;
+#else
     char command[8192];
     const struct mach_header *header = _dyld_get_image_header(0);
     int used = std::snprintf(command, sizeof command, "atos -i -o '%s' -l %p", _dyld_get_image_name(0),
@@ -263,6 +283,7 @@ std::string symbolize(void *const *frames, int depth) {
     }
     pclose(p);
     return text;
+#endif
 }
 
 }  // namespace

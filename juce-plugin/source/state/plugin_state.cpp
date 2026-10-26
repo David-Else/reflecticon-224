@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#ifdef _WIN32
+#if !defined(__APPLE__)
 #include <locale.h>
 #else
 #include <xlocale.h>
@@ -27,10 +27,35 @@ int snprintf_l(char *text, size_t size, _locale_t locale, const char *format, do
 float strtof_l(const char *text, char **end, _locale_t locale) {
     return _strtof_l(text, end, locale);
 }
-#else
+#elif defined(__APPLE__)
 locale_t cLocale() {
     static locale_t locale = newlocale(LC_ALL_MASK, "C", nullptr);
     return locale;
+}
+#else
+// glibc has no snprintf_l/strtof_l: switch this thread to the "C" locale
+// around each call instead. uselocale() is thread-local, so a host's locale
+// on its other threads is untouched.
+locale_t cLocale() {
+    static locale_t locale = newlocale(LC_ALL_MASK, "C", nullptr);
+    return locale;
+}
+
+class ScopedCLocale {
+public:
+    ScopedCLocale() : previous_(uselocale(cLocale())) {}
+    ~ScopedCLocale() { uselocale(previous_); }
+
+    ScopedCLocale(const ScopedCLocale &) = delete;
+    ScopedCLocale &operator=(const ScopedCLocale &) = delete;
+
+private:
+    locale_t previous_;
+};
+
+int snprintf_l(char *text, size_t size, locale_t, const char *format, double value) {
+    ScopedCLocale guard;
+    return std::snprintf(text, size, format, value);
 }
 #endif
 
