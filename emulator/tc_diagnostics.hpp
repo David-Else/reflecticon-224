@@ -49,7 +49,7 @@ public:
     // At a row marker: the microinstruction latched there (fetched in the
     // previous row), and the sign latch (U20): the sign of the multiply whose
     // partial products the ARU adds this row, one microinstruction older.
-    void at_marker(uint32_t marker_microinstruction, bool sign_latch) {
+    LEXICON_ALWAYS_INLINE void at_marker(uint32_t marker_microinstruction, bool sign_latch) {
         this->marker_microinstruction = marker_microinstruction;
         dport4 = {marker_microinstruction, sign_latch, false, false, 0, true};
         dport5.set({marker_microinstruction, false, false, false, 0, true}, scheduler.now(),
@@ -69,7 +69,28 @@ public:
 
     // After the row's ARU clocks: what the T&C drove at each (`clocked`) and
     // the ARU's SAT at each. U9 samples them 25 ns after each clock.
-    void at_arithmetic(const Aruck (&clocked)[3], unsigned saturated, Tick row_marker) {
+    LEXICON_ALWAYS_INLINE void at_arithmetic(const Aruck (&clocked)[3], unsigned saturated, Tick row_marker) {
+        if (saturated == 0) {
+            // No SAT at any edge (nearly every row): the one-shot cannot
+            // trigger, and U9's contents after each edge follow from this
+            // row's edges alone, exactly what the three sample_arithmetic
+            // calls below would leave.
+            // What each edge shifted into U9 (sample_arithmetic's bits).
+            bool s0_xor_s1[3];
+            bool m0_xor_m1[3];
+            for (unsigned edge = 0; edge < 3; edge++) {
+                s0_xor_s1[edge] = clocked[edge].operand == OperandClock::Shift;
+                m0_xor_m1[edge] = bit(clocked[edge].pair, 1) != bit(clocked[edge].pair, 0);
+            }
+            uint8_t after_edge1 = uint8_t(s0_xor_s1[1] | m0_xor_m1[0] << 1 | s0_xor_s1[0] << 2 | m0_xor_m1[1] << 3);
+            bool saturation = pulse_active(row_marker + dport3_sample);
+            bool held = clocked[1].operand == OperandClock::Hold && clocked[2].operand == OperandClock::Hold;
+            dport3.set({marker_microinstruction, false, saturation, held, after_edge1, true}, scheduler.now(),
+                       row_marker + dport3_visible);
+            aru_history = uint8_t(s0_xor_s1[2] | m0_xor_m1[1] << 1 | s0_xor_s1[1] << 2 | m0_xor_m1[2] << 3);
+            last_sat_sample = false;
+            return;
+        }
         sample_arithmetic(clocked[0], bit(saturated, 0), row_marker, 0);
         sample_arithmetic(clocked[1], bit(saturated, 1), row_marker, 1);
         sample_dport3(clocked, row_marker);

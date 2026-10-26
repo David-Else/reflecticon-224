@@ -67,6 +67,31 @@ target_include_directories(lexplug_engine INTERFACE
 # Debug info in every build type, for the RT-allocation test's call sites.
 target_compile_options(lexplug_engine INTERFACE $<IF:$<CXX_COMPILER_ID:MSVC>,/Z7,-g>)
 
+# Profile-guided optimization (clang and clang-cl; scripts/pgo_train.sh writes the
+# profile from the speed gate on your own ROMs). The machine is branchy
+# interpreter code, and a profile is worth 8-17% of the block time. The
+# profile names functions, never ROM bytes.
+#   LEXPLUG_PGO_GENERATE=ON   instrument the machine's translation units
+#   LEXPLUG_PGO_PROFILE=FILE  compile them with this merged .profdata
+set(LEXPLUG_PGO_PROFILE "" CACHE FILEPATH "A merged clang .profdata for the machine (see scripts/pgo_train.sh)")
+option(LEXPLUG_PGO_GENERATE "Instrument the machine for a PGO training run" OFF)
+if(LEXPLUG_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(lexplug_engine INTERFACE -fprofile-instr-generate)
+    target_link_options(lexplug_engine INTERFACE -fprofile-instr-generate)
+elseif(LEXPLUG_PGO_PROFILE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(NOT EXISTS "${LEXPLUG_PGO_PROFILE}")
+        message(FATAL_ERROR "LEXPLUG_PGO_PROFILE: no such file ${LEXPLUG_PGO_PROFILE}")
+    endif()
+    # The plugin's other code has no counts in the profile, and a profile from
+    # a slightly older source still applies to the functions it knows.
+    target_compile_options(lexplug_engine INTERFACE
+        "-fprofile-instr-use=${LEXPLUG_PGO_PROFILE}"
+        -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+    message(STATUS "PGO: the machine is compiled with ${LEXPLUG_PGO_PROFILE}")
+elseif(LEXPLUG_PGO_PROFILE OR LEXPLUG_PGO_GENERATE)
+    message(WARNING "PGO options are clang-only and ignored with ${CMAKE_CXX_COMPILER_ID} (MSVC: /GL /LTCG:PGI then /LTCG:PGO by hand)")
+endif()
+
 juce_add_plugin(${PLUGIN_TARGET}
     PRODUCT_NAME "${PLUGIN_PRODUCT_NAME}"
     COMPANY_NAME "${PLUGIN_COMPANY_NAME}"

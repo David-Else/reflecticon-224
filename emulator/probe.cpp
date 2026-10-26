@@ -16,6 +16,7 @@
 //   wcs            print the running program's 128 WCS words (T&C polarity)
 //   save FILE      write the WCS as the CPU sees it (0x4000-0x41FF) as an
 //                  address-prefixed hex dump
+//   dmem FILE      write the delay memory: 65,536 16-bit words, little-endian
 //   watch ADDR...  report (once each) when the CPU reaches these PCs (hex)
 //   panel          print the 224X panel's nine digit/LED bytes (lit bits = 1)
 //   audio L R      hold the converter pins: left and right ADC codes (12-bit, gain 0)
@@ -141,7 +142,7 @@ int main(int argc, char **argv) try {
             words >> ms;
             long count[4] = {}, largest[4] = {};
             double sum[4] = {}, first[4] = {-1, -1, -1, -1};
-            uint64_t start = h.cycles;
+            Tick start = h.now();
             h.audio_observer = [&](const AudioEvent &e) {
                 long v = long(e.dac) - 2048;
                 if (v < 0) {
@@ -156,7 +157,7 @@ int main(int argc, char **argv) try {
                     sum[c] += double(v);
                     largest[c] = std::max(largest[c], v);
                     if (v > 64 && first[c] < 0) {
-                        first[c] = double(h.cycles - start) * 488.28125e-6;
+                        first[c] = double(e.time - start) / (576.0 * 1e6);   // the event's own time, in ms
                     }
                 }
             };
@@ -186,6 +187,11 @@ int main(int argc, char **argv) try {
                 }
                 out << line << '\n';
             }
+        } else if (op == "dmem") {
+            std::string path;
+            words >> path;
+            std::ofstream out(path, std::ios::binary);
+            out.write(reinterpret_cast<const char *>(h.dsp->memory), sizeof h.dsp->memory);
         } else if (op == "watch") {
             for (std::string a; words >> a;) {
                 h.pc_watches[std::stoul(a, nullptr, 16)] = true;

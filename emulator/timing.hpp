@@ -19,6 +19,14 @@
 // the board-level machine's timing constants (../board-level-verilog/tc.sv); each constant names its source.
 #include <cstdint>
 
+// The per-row hooks the scheduler's whole-row path calls: inlined into it
+// whatever the compiler's own estimate, so each row is one straight run.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define LEXICON_ALWAYS_INLINE __forceinline
+#else
+#define LEXICON_ALWAYS_INLINE __attribute__((always_inline)) inline
+#endif
+
 namespace lexicon224x::cpu {
 
 using Tick = uint64_t;

@@ -65,6 +65,7 @@ public:
         slot->data = uint8_t(~value);
         slot->requested_at = scheduler.now();
         slot->cpu_t1 = t1;
+        waiting++;
         if (trace) {
             trace->wcs_request(scheduler.now(), reading, wcs_row, lane);
         }
@@ -75,10 +76,14 @@ public:
     // protect bit or the pair flip-flop refuses this slot. A halted DSP
     // grants at any marker ("the SBC module can read from and write to the
     // WCS anytime").
-    void at_marker(uint32_t marker_microinstruction, bool dsp_running) {
+    // `marker_protect`: that microinstruction's protect bit.
+    LEXICON_ALWAYS_INLINE void at_marker(bool marker_protect, bool dsp_running) {
+        if (waiting == 0) {
+            return;     // nothing to grant: the common row
+        }
         for (auto &request : requests) {
             if (request.valid && !request.scheduled && request.requested_at < scheduler.now() &&
-                (!dsp_running || (!protected_pair && !decode(marker_microinstruction, model).protect))) {
+                (!dsp_running || (!protected_pair && !marker_protect))) {
                 grant(request);
             }
         }
@@ -91,9 +96,9 @@ public:
     // off instead in the row after a RESET), and a RESET row clears it; while
     // it is set, requests wait too. resetd_n (RESETD/) is low for the row
     // after an OPER RESET. (tc.sv's names.)
-    void at_fetch(uint32_t previous, uint32_t fetched) {
-        bool previous_reset = decode(previous, model).reset;
-        if (!decode(previous, model).protect && decode(fetched, model).protect) {
+    // The bits of the microinstruction register's old word and of the fetched one.
+    LEXICON_ALWAYS_INLINE void at_fetch(bool previous_protect, bool previous_reset, bool fetched_protect) {
+        if (!previous_protect && fetched_protect) {
             if (resetd_n) {
                 protected_pair = !protected_pair;
             } else {
@@ -109,7 +114,7 @@ public:
     // ---- Outputs ----
 
     // Is the fetch at this row marker displaced by a granted access?
-    bool displaced(Tick row_marker) const {
+    LEXICON_ALWAYS_INLINE bool displaced(Tick row_marker) const {
         if (row_marker >= windows_end) {
             return false;
         }
@@ -123,7 +128,7 @@ public:
     }
 
     // Is the multiplicand register held on this ARU clock edge?
-    bool held(Tick edge) const {
+    LEXICON_ALWAYS_INLINE bool held(Tick edge) const {
         if (edge > windows_end) {
             return false;
         }
@@ -133,6 +138,12 @@ public:
             }
         }
         return false;
+    }
+
+    // No access holds a clock after this: a row whose marker is later can
+    // skip the three held() checks.
+    Tick holds_end() const {
+        return windows_end;
     }
 
     uint64_t writes_committed() const {
@@ -169,6 +180,7 @@ private:
         }
         request.sampled_at = ready_edge - ready_sample + cpu_period + phi2_rise;
         request.scheduled = true;
+        waiting--;
         // The next row's fetch is displaced; the multiplicand holds start at
         // ARUCK edge 1 of the row after that.
         request.displaced_start = row_marker + row;
@@ -218,6 +230,7 @@ private:
     std::array<Request, 4> requests;
     Tick windows_end = 0;   // no access displaces a fetch or holds a clock after this
     bool protected_pair = false, resetd_n = false;
+    unsigned waiting = 0;   // requests made and not yet granted
     uint64_t writes = 0;
     Trace *trace = nullptr;
 };
