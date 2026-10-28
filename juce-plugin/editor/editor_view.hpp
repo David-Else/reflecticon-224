@@ -40,6 +40,13 @@ public:
     int contentHeight() const;
     // The scrolled content, e.g. for createComponentSnapshot of everything.
     juce::Component &content();
+    // The dropdowns (ids: the firmware set's is its index + 1, a program's is its
+    // catalog index + 1, a variation's is its number, an output's is the DAC + 1),
+    // for tests.
+    juce::ComboBox &romSetBox();
+    juce::ComboBox &programBox();
+    juce::ComboBox &variationBox();
+    juce::ComboBox &outputBox(int side);
 
     void resized() override;
     void paint(juce::Graphics &g) override;

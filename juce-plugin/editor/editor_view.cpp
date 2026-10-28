@@ -92,11 +92,7 @@ public:
         setLabel_.setText("Firmware", juce::dontSendNotification);
         addAndMakeVisible(setLabel_);
         setBox_.setTextWhenNothingSelected("(no firmware yet)");
-        setBox_.onChange = [this] {
-            if (!updating_ && setBox_.getSelectedId() > 0) {
-                owner_.commands_.selectRomSet(setBox_.getSelectedId() - 1);
-            }
-        };
+        // No onChange: the selection is read in the tick (see applyRomSets).
         addAndMakeVisible(setBox_);
         status_.setFont(font(kFont, false));
         addAndMakeVisible(status_);
@@ -146,15 +142,13 @@ public:
                 box.addItem(kOutputs[i], i + 1);
             }
             box.setTooltip("Which of the machine's four outputs (A-D, DAC order) feeds this channel. Default: left A, right C.");
-            box.onChange = [this] {
-                if (!updating_ && out_[0].getSelectedId() > 0 && out_[1].getSelectedId() > 0) {
-                    owner_.commands_.setOutputPair(out_[0].getSelectedId() - 1, out_[1].getSelectedId() - 1);
-                }
-            };
+            // No onChange: the selection is read in the tick (see applyAudio).
             addAndMakeVisible(box);
         }
         out_[0].setSelectedId(1, juce::dontSendNotification);
         out_[1].setSelectedId(3, juce::dontSendNotification);
+        outPick_[0].drawn = out_[0].getSelectedId();   // the editor drew these
+        outPick_[1].drawn = out_[1].getSelectedId();
         wetLabel_.setText("Dry/wet", juce::dontSendNotification);
         addAndMakeVisible(wetLabel_);
         wet_.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -184,19 +178,10 @@ public:
         // Program
         program_.setTextWhenNothingSelected("(power on to read the program list)");
         program_.setTextWhenNoChoicesAvailable("(no catalog for this firmware)");
-        program_.onChange = [this] {
-            if (!updating_ && program_.getSelectedId() > 0) {
-                owner_.commands_.selectProgram(program_.getSelectedId() - 1);
-            }
-        };
+        // No onChange: the selection is read in the tick (see applyProgram).
         addAndMakeVisible(program_);
         variationLabel_.setText("Variation", juce::dontSendNotification);
         addAndMakeVisible(variationLabel_);
-        variation_.onChange = [this] {
-            if (!updating_ && variation_.getSelectedId() > 0) {
-                owner_.commands_.selectVariation(variation_.getSelectedId());
-            }
-        };
         addAndMakeVisible(variation_);
         operatorStatus_.setColour(juce::Label::textColourId, juce::Colours::grey);
         addAndMakeVisible(operatorStatus_);
@@ -226,6 +211,21 @@ public:
         applyAudio(s);
         applyMeters(s);
         updating_ = false;
+    }
+
+    // The dropdowns, for tests (the notification order they have to survive needs
+    // a real ComboBox and the message queue).
+    juce::ComboBox &romSetBox() {
+        return setBox_;
+    }
+    juce::ComboBox &programBox() {
+        return program_;
+    }
+    juce::ComboBox &variationBox() {
+        return variation_;
+    }
+    juce::ComboBox &outputBox(int side) {
+        return out_[juce::jlimit(0, 1, side)];
     }
 
     int layout(int width) {
@@ -397,6 +397,61 @@ private:
         });
     }
 
+    // One dropdown's request tracking: the id the editor last drew, and the user's
+    // pick while the snapshot does not carry it yet. Four of the boxes' values are
+    // operator parameters (left, right, program, variation); the firmware box's is
+    // a boot job, so its request in flight is pendingRomSet.
+    struct Pick {
+        int drawn = -1;    // the id the editor put in the box (what a stale notification reads)
+        int wanted = -1;   // the user's pick, until the snapshot carries it
+    };
+
+    // True when the box holds a selection the editor did not draw, i.e. the user
+    // picked it (a click in the popup, an arrow key, the wheel). `carried` is the
+    // id of the value the snapshot already asks for, so re-picking it is no request.
+    //
+    // Reading the box here rather than in ComboBox::onChange is the point: that
+    // notification is asynchronous (ComboBox::sendChange -> triggerAsyncUpdate,
+    // and a popup pick goes through ModalComponentManager first), so a handler
+    // that reads the box there names the id the box holds when the notification
+    // lands, after a tick may have put the snapshot's value back. A tick that
+    // reads the box before writing it cannot lose the pick.
+    bool tookPick(juce::ComboBox &box, Pick &pick, int carried) {
+        int id = box.getSelectedId();
+        if (id <= 0 || id == pick.drawn || id == carried) {
+            return false;
+        }
+        pick.wanted = id;
+        return true;
+    }
+
+    // What the box shows once this tick has sent the user's pick: the pick, else
+    // the request while the machine has not taken it (`requested`), else the
+    // machine's own value (`machine`). A value with no item is not drawn, so a
+    // request for a program this firmware lacks leaves the box as it was.
+    // Releasing the pick needs the *next* snapshot: the one this tick read still
+    // names the old value, so the box keeps the pick until the request arrives.
+    void showPick(juce::ComboBox &box, Pick &pick, int requested, int machine) {
+        if (requested == pick.wanted) {
+            pick.wanted = -1;
+        }
+        int show = pick.wanted;
+        if (show < 0) {
+            show = requested > 0 && requested != machine ? requested : machine;
+        }
+        if (show > 0 && box.indexOfItemId(show) > 0) {
+            pick.drawn = show;
+            if (box.getSelectedId() != show) {
+                box.setSelectedId(show, juce::dontSendNotification);
+            }
+        } else if (pick.wanted < 0 && box.getSelectedId() != 0) {
+            // Nothing to show (no machine value yet, or none of its items): the box
+            // says so, as it did while the snapshot alone drove it.
+            pick.drawn = -1;
+            box.setSelectedId(0, juce::dontSendNotification);
+        }
+    }
+
     void applyRomSets(const UiSnapshot &s) {
         juce::String signature;
         int count = juce::jlimit(0, kMaxRomSets, int(s.romSetCount));
@@ -407,6 +462,7 @@ private:
         if (signature != romSignature_) {
             romSignature_ = signature;
             setBox_.clear(juce::dontSendNotification);
+            romPick_ = Pick{};   // a rebuilt list holds no pick
             for (int i = 0; i < count; i++) {
                 const UiRomSet &set = s.romSets[i];
                 juce::String name(cString(set.name, sizeof set.name));
@@ -421,13 +477,21 @@ private:
             }
         }
         setBox_.setEnabled(count > 0);
-        int selected = 0;
-        if (s.selectedRomSet >= 0 && s.selectedRomSet < count) {
-            selected = s.selectedRomSet + 1;
+
+        // Ids are the set index + 1. The request in flight is the boot job's set
+        // (pendingRomSet, -1 = no job), which the machine takes when it goes live;
+        // a set this firmware lists as unsupported is not sent.
+        int requested = s.pendingRomSet >= 0 ? s.pendingRomSet + 1 : 0;
+        int machine = s.selectedRomSet >= 0 ? s.selectedRomSet + 1 : 0;
+        if (tookPick(setBox_, romPick_, requested)) {
+            int picked = romPick_.wanted;
+            if (picked <= count && !s.romSets[picked - 1].unsupported) {
+                owner_.commands_.selectRomSet(picked - 1);
+            } else {
+                romPick_.wanted = -1;   // listed, but not this plugin's to load
+            }
         }
-        if (setBox_.getSelectedId() != selected) {
-            setBox_.setSelectedId(selected, juce::dontSendNotification);
-        }
+        showPick(setBox_, romPick_, requested, machine);
     }
 
     void applyStatus(const UiSnapshot &s) {
@@ -484,6 +548,8 @@ private:
     void rebuildProgramList() {
         program_.clear(juce::dontSendNotification);
         variation_.clear(juce::dontSendNotification);
+        programPick_ = Pick{};     // a cleared box holds no pick
+        variationPick_ = Pick{};
         if (catalog_ == nullptr) {
             return;
         }
@@ -548,6 +614,7 @@ private:
         }
         pages_.clear();
         variation_.clear(juce::dontSendNotification);
+        variationPick_ = Pick{};
         if (programIndex_ < 0) {
             resizeOwner();
             return;
@@ -617,16 +684,18 @@ private:
         bool ready = catalog_ != nullptr && s.status == UiStatus::Ready;
         program_.setEnabled(ready);
         variation_.setEnabled(ready && programIndex_ >= 0);
-        int wantedProgram = 0;
-        if (programIndex_ >= 0) {
-            wantedProgram = programIndex_ + 1;
+        // A program's id is its catalog index + 1; a variation's is its number. The
+        // request is only shown once a machine has a program to replace (-1 = none).
+        int programRequested = s.program >= 0 ? s.requestedProgram + 1 : 0;
+        if (tookPick(program_, programPick_, programRequested)) {
+            owner_.commands_.selectProgram(program_.getSelectedId() - 1);
         }
-        if (program_.getSelectedId() != wantedProgram) {
-            program_.setSelectedId(wantedProgram, juce::dontSendNotification);
+        showPick(program_, programPick_, programRequested, s.program + 1);
+        int variationRequested = s.program >= 0 ? s.requestedVariation : 0;
+        if (tookPick(variation_, variationPick_, variationRequested)) {
+            owner_.commands_.selectVariation(variation_.getSelectedId());
         }
-        if (variation_.getSelectedId() != s.variation) {
-            variation_.setSelectedId(s.variation, juce::dontSendNotification);
-        }
+        showPick(variation_, variationPick_, variationRequested, s.variation);
         for (size_t i = 0; i < toggles_.size(); i++) {
             juce::ToggleButton &button = *toggles_[i];
             uint8_t bit = toggleBits_[i];
@@ -673,12 +742,19 @@ private:
         if (!wet_.isMouseButtonDown() && t >= wetUntil_ && std::lround(wet_.getValue()) != std::lround(s.dryWet * 100.0f)) {
             wet_.setValue(std::lround(s.dryWet * 100.0f), juce::dontSendNotification);
         }
-        if (s.outLeft < 4 && out_[0].getSelectedId() != s.outLeft + 1) {
-            out_[0].setSelectedId(s.outLeft + 1, juce::dontSendNotification);
+        // The output dropdowns, whose ids are the DAC + 1 (0 = none). They send as
+        // a pair, so a pick on either side sends both sides' current ids.
+        int left = s.outLeft < 4 ? int(s.outLeft) + 1 : 0;
+        int right = s.outRight < 4 ? int(s.outRight) + 1 : 0;
+        bool picked = tookPick(out_[0], outPick_[0], left);
+        picked = tookPick(out_[1], outPick_[1], right) || picked;
+        if (picked) {
+            owner_.commands_.setOutputPair(out_[0].getSelectedId() - 1, out_[1].getSelectedId() - 1);
         }
-        if (s.outRight < 4 && out_[1].getSelectedId() != s.outRight + 1) {
-            out_[1].setSelectedId(s.outRight + 1, juce::dontSendNotification);
-        }
+        // The snapshot's value comes straight from the parameter, so the request is
+        // the machine's value here: a pick is released on the next publish.
+        showPick(out_[0], outPick_[0], left, left);
+        showPick(out_[1], outPick_[1], right, right);
         if (analog_.getToggleState() != s.analog) {
             analog_.setToggleState(s.analog, juce::dontSendNotification);
         }
@@ -717,6 +793,7 @@ private:
     juce::TextButton romButton_;
     juce::Label setLabel_;
     juce::ComboBox setBox_;
+    Pick romPick_;
     juce::Label status_;
     std::unique_ptr<juce::FileChooser> chooser_;
 
@@ -728,14 +805,17 @@ private:
 
     juce::Label outLabel_[2];
     juce::ComboBox out_[2];
+    Pick outPick_[2];
     juce::Label wetLabel_;
     juce::Slider wet_;
     double wetUntil_ = 0;
     juce::ToggleButton analog_;
 
     juce::ComboBox program_;
+    Pick programPick_;
     juce::Label variationLabel_;
     juce::ComboBox variation_;
+    Pick variationPick_;
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles_;
     std::vector<uint8_t> toggleBits_;
     juce::Label operatorStatus_;
@@ -775,6 +855,22 @@ int EditorView::contentHeight() const {
 
 juce::Component &EditorView::content() {
     return *content_;
+}
+
+juce::ComboBox &EditorView::romSetBox() {
+    return content_->romSetBox();
+}
+
+juce::ComboBox &EditorView::programBox() {
+    return content_->programBox();
+}
+
+juce::ComboBox &EditorView::variationBox() {
+    return content_->variationBox();
+}
+
+juce::ComboBox &EditorView::outputBox(int side) {
+    return content_->outputBox(side);
 }
 
 void EditorView::resized() {

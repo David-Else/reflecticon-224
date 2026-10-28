@@ -58,12 +58,19 @@ struct UiSnapshot {
     int32_t romSetCount;               // entries used in romSets
     UiRomSet romSets[kMaxRomSets];
     int32_t selectedRomSet;            // index into romSets, -1 = none
+    int32_t pendingRomSet;             // the set a boot job is preparing, -1 = none: it
+                                       // becomes selectedRomSet when its machine goes live
     char romHash[17];                  // hash of the running set (catalog key), '' if none
     double machineSeconds;             // machine time since power-on (meters are timed in it)
 
     // --- Program ---------------------------------------------------------
     int32_t program;                   // index into lexcat::Catalog::programs, -1 = unknown
+    int32_t requestedProgram;          // the operator's request (the program parameter),
+                                       // -1 = unknown: the machine takes it when the load
+                                       // starts, and the write-back puts it back if one fails
     int32_t variation;                 // 1..8 (the 224: 1)
+    int32_t requestedVariation;        // the operator's request (the variation parameter),
+                                       // 1..8, -1 = unknown
     // slider_k's stored byte (k = 1..36 at [k-1]), for the current program's
     // named sliders in catalog page/slot order (Program::generic). Entries
     // past the program's named-slider count are unused.
@@ -100,8 +107,11 @@ inline UiSnapshot defaultSnapshot() {
     UiSnapshot s{};
     s.status = UiStatus::Booting;
     s.selectedRomSet = -1;
+    s.pendingRomSet = -1;
     s.program = -1;
+    s.requestedProgram = -1;
     s.variation = 1;
+    s.requestedVariation = -1;
     s.levelDb = 0.0f;
     s.dryWet = 1.0f;
     s.outLeft = 0;
