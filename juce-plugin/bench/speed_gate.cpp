@@ -35,9 +35,11 @@
 //   g++     -std=c++20 -O3 -g -DNDEBUG -ffp-contract=off -o speed_gate bench/speed_gate.cpp
 //
 // A/B two builds of the machine on the same ROMs: the steady-state mean is
-// the stable number (it is what a PGO or a flag change moves), and the last
-// line is a hash of every output sample's bits, so two builds can be shown to
-// differ in speed only. scripts/speed_gate_ab.sh runs the set.
+// the stable number (it is what a PGO or a flag change moves). The last two
+// lines hash every output sample's bits -- the machine's own four channels at
+// 48 kHz, and the host-rate pair a DAW hears (the resampler, when --rate is
+// not 48000) -- so two builds can be shown to differ in speed only.
+// scripts/speed_gate_ab.sh runs the set.
 #include "../source/engine.hpp"
 #include "../source/resampler.hpp"
 #include <algorithm>
@@ -394,6 +396,16 @@ int main(int argc, char **argv) try {
     // be shown to differ in speed only (the same check byte_exact makes, minus
     // the reference loop).
     uint64_t output_hash = 1469598103934665603ull;   // FNV-1a
+    uint64_t host_hash = 1469598103934665603ull;     // ... over the host-rate pair a DAW hears
+    auto hash_pair = [&](const float *l, const float *r, int n) {
+        for (int i = 0; i < n; i++) {
+            for (const float *p : {l + i, r + i}) {
+                uint32_t bits;
+                std::memcpy(&bits, p, sizeof bits);
+                host_hash = (host_hash ^ bits) * 1099511628211ull;
+            }
+        }
+    };
     auto hash_samples = [&](const float *const out[4], int n) {
         for (int c = 0; c < 4; c++) {
             for (int i = 0; i < n; i++) {
@@ -537,6 +549,7 @@ int main(int argc, char **argv) try {
             auto r3 = Clock::now();
             t_resample = std::chrono::duration<double>((r1 - r0) + (r3 - r2)).count();
         }
+        hash_pair(host_out_l.data(), host_out_r.data(), block);
         double compute = std::chrono::duration<double>(Clock::now() - started).count();
         double cpu = double(thread_cpu_ns() - cpu_started) * 1e-9;
         realtime_thread.block_finish();
@@ -587,6 +600,7 @@ int main(int argc, char **argv) try {
         std::printf("\n");
     }
     std::printf("output hash %016llx\n", static_cast<unsigned long long>(output_hash));
+    std::printf("host hash %016llx\n", static_cast<unsigned long long>(host_hash));
     return 0;
 } catch (const std::exception &e) {
     std::fprintf(stderr, "speed_gate: %s\n", e.what());

@@ -65,7 +65,7 @@ run_one() {
 		exit 1
 	fi
 	line=$(printf '%s\n' "$out" | sed -n 's/^steady *blocks *[0-9]* *mean \([0-9.]*\).*/\1/p')
-	hash=$(printf '%s\n' "$out" | sed -n 's/^output hash //p')
+	hash=$(printf '%s\n' "$out" | sed -n 's/^output hash //p;s/^host hash //p' | paste -sd, -)
 	printf '%-28s steady mean %s  hash %s\n' "$label" "${line:-?}" "${hash:-?}"
 	printf '%s\t%s\t%s\n' "${line:-?}" "$label" "${hash:-?}" >> pgo/ab/times.txt
 }
