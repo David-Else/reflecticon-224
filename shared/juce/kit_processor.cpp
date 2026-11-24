@@ -26,6 +26,16 @@ static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout(const Info
             break;
         }
     }
+    // Sync menus for the times that may follow the host tempo
+    for (auto& p : info.params)
+        if (p.tempo_sync)
+            l.add(std::make_unique<AudioParameterChoice>(ParameterID{Processor::syncId(p), 1}, p.name + " sync",
+                                                         Processor::syncChoices(), 0));
+    // The kit's own: wet/dry, after the machine (the hardware gives the effect only).
+    l.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{"mix", 1}, "Mix", NormalisableRange<float>(0.0f, 100.0f), 100.0f,
+        AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(
+            [](float v, int) { return String(roundToInt(v)) + " % wet"; })));
     return l;
 }
 
@@ -35,8 +45,21 @@ Processor::Processor(const MachineType& type)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       params(*this, nullptr, "params", makeLayout(type.info)), type_(type) {
     std::vector<const std::atomic<float>*> raw;
-    for (auto& p : type_.info.params) raw.push_back(params.getRawParameterValue(p.id));
+    for (size_t i = 0; i < type_.info.params.size(); i++) {
+        auto& p = type_.info.params[i];
+        raw.push_back(params.getRawParameterValue(p.id));
+        if (p.tempo_sync) {   // the machine reads the synced value, which is the control's when off
+            auto s = std::make_unique<Synced>();
+            s->index = i;
+            s->knob = raw.back();
+            s->choice = params.getRawParameterValue(syncId(p));
+            s->value = s->knob->load();
+            raw.back() = &s->value;
+            synced_.push_back(std::move(s));
+        }
+    }
     host_ = std::make_unique<Host>(type_, raw);
+    mix_ = params.getRawParameterValue("mix");
     // a new instance opens the easy editor; KIT_EDITOR=hardware opens the panel (tests, pluginval)
     if (const char* ed = std::getenv("KIT_EDITOR"); ed && std::string(ed) == "hardware") hardware_ = true;
     findRomsAtStart();
@@ -72,6 +95,7 @@ void Processor::findRomsAtStart() {
         romPaths_ = remembered;
     } else {
         status_ = juce::String("no ROMs: choose or drop the files (or set ") + type_.info.rom_env + ")";
+        statusOk_ = false;
         return;
     }
     boot({});
@@ -102,11 +126,13 @@ void Processor::loadRoms(const juce::StringArray& paths) {
     RomSet set;
     if (!readRoms(paths, set) || !set.complete()) {
         status_ = "not loaded: " + juce::String(set.describe(type_.info.roms));
+        statusOk_ = false;
         return;
     }
     std::string err;
     if (!type_.boot(set, {}, &err)) {   // try it before forgetting the old set
         status_ = "cannot run: " + juce::String(err);
+        statusOk_ = false;
         return;
     }
     roms_ = set;
@@ -122,14 +148,52 @@ void Processor::boot(const std::string& state) {
     auto m = type_.boot(roms_, state, &err);
     if (!m) {
         status_ = "cannot run: " + juce::String(err);
+        statusOk_ = false;
         return;
     }
     host_->install(std::move(m));
     setLatencySamples(int(host_->latency()));
     status_ = juce::String(roms_.describe(type_.info.roms));
+    statusOk_ = true;
+}
+
+const juce::StringArray& Processor::syncChoices() {
+    static const juce::StringArray c{"Off",  "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D",
+                                     "1/4T", "1/4",  "1/4D",  "1/2T", "1/2",   "1/2D", "1/1",
+                                     "2/1",  "4/1"};   // append only: sessions save the index
+    return c;
+}
+
+double Processor::syncBeats(int choice) {
+    static const double b[] = {0,         0.125, 0.25 * 2 / 3, 0.25, 0.375, 0.5 * 2 / 3, 0.5, 0.75,
+                               2.0 / 3.0, 1.0,   1.5,          4.0 / 3.0, 2.0, 3.0, 4.0, 8.0, 16.0};
+    return choice > 0 && choice < int(std::size(b)) ? b[choice] : 0.0;
+}
+
+int Processor::syncChoice(size_t i) const {
+    for (auto& s : synced_)
+        if (s->index == i) return int(std::lround(s->choice->load()));
+    return 0;
+}
+
+void Processor::updateSynced() {
+    const double bpm = bpm_.load();
+    for (auto& s : synced_) {
+        const auto& p = type_.info.params[s->index];
+        const double beats = syncBeats(int(std::lround(s->choice->load())));
+        float v = s->knob->load();
+        if (beats > 0 && bpm > 0) {
+            // a time in ms is the note's length; a rate in Hz is one cycle per note
+            const double x = p.unit == "Hz" ? bpm / 60.0 / beats : 60000.0 / bpm * beats;
+            v = float(std::clamp(x, double(p.min), double(p.max)));
+            if (p.kind == Param::Int) v = std::round(v);
+        }
+        s->value.store(v);
+    }
 }
 
 void Processor::timerCallback() {
+    updateSynced();
     int l = int(host_->latency());
     if (l != getLatencySamples()) setLatencySamples(l);
     adoptPanelSettings();
@@ -146,6 +210,17 @@ void Processor::adoptPanelSettings() {
             if (std::isnan(ps.adopt[i])) continue;
             auto* prm = dynamic_cast<juce::RangedAudioParameter*>(params.getParameter(type_.info.params[i].id));
             if (!prm) continue;
+            if (syncChoice(i) > 0) {   // following the tempo: a new time set on the panel turns that off
+                float now = 0;
+                for (auto& s : synced_)
+                    if (s->index == i) now = s->value.load();
+                if (std::abs(ps.adopt[i] - now) < 0.5f) continue;
+                if (auto* sp = params.getParameter(syncId(type_.info.params[i]))) {
+                    sp->beginChangeGesture();
+                    sp->setValueNotifyingHost(0.0f);
+                    sp->endChangeGesture();
+                }
+            }
             const float v = prm->convertTo0to1(prm->getNormalisableRange().snapToLegalValue(ps.adopt[i]));
             if (std::abs(v - prm->getValue()) < 1e-6f) continue;
             prm->beginChangeGesture();
@@ -169,6 +244,10 @@ void Processor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     host_->prepare(int(std::lround(sampleRate)), maxBlock_);
     setLatencySamples(int(host_->latency()));
     scratch_.setSize(2, maxBlock_);
+    dry_.setSize(2, kDryRing);
+    dry_.clear();
+    dryAt_ = 0;
+    mixPrev_ = mix_->load() * 0.01f;
 }
 
 bool Processor::isBusesLayoutSupported(const BusesLayout& layouts) const {
@@ -186,6 +265,12 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
         buffer.clear();
         return;
     }
+    if (!synced_.empty()) {   // times that follow the tempo
+        if (auto* ph = getPlayHead())
+            if (auto pos = ph->getPosition())
+                if (auto bpm = pos->getBpm(); bpm && *bpm > 1.0) bpm_.store(*bpm);
+        updateSynced();
+    }
     // in chunks of the prepared block (a host may exceed it); the inputs are copied or mixed into
     // scratch_ first, since the outputs overwrite the buffer in place
     for (int at = 0; at < n; at += maxBlock_) {
@@ -200,8 +285,29 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
             std::copy(l, l + k, s0);
             std::copy(r, r + k, s1);
         }
+        // the dry signal, for the mix: kept until the machine's latency has passed
+        float* d0 = dry_.getWritePointer(0);
+        float* d1 = dry_.getWritePointer(1);
+        for (int i = 0; i < k; i++) {
+            d0[(dryAt_ + i) & (kDryRing - 1)] = l[i];
+            d1[(dryAt_ + i) & (kDryRing - 1)] = r[i];
+        }
         const float* ins[2] = {s0, s1};
-        host_->process(ins, buffer.getWritePointer(0, at), buffer.getWritePointer(1, at), k);
+        float* o0 = buffer.getWritePointer(0, at);
+        float* o1 = buffer.getWritePointer(1, at);
+        host_->process(ins, o0, o1, k);
+        const float mix = std::clamp(mix_->load() * 0.01f, 0.0f, 1.0f);
+        if (mix < 1.0f || mixPrev_ < 1.0f) {
+            const int lat = std::clamp(getLatencySamples(), 0, kDryRing - maxBlock_ - 1);
+            for (int i = 0; i < k; i++) {
+                const float m = mixPrev_ + (mix - mixPrev_) * float(i + 1) / float(k);   // no zipper
+                const int j = (dryAt_ + i - lat) & (kDryRing - 1);
+                o0[i] = o0[i] * m + d0[j] * (1.0f - m);
+                o1[i] = o1[i] * m + d1[j] * (1.0f - m);
+            }
+        }
+        mixPrev_ = mix;
+        dryAt_ = (dryAt_ + k) & (kDryRing - 1);
     }
 }
 
@@ -210,6 +316,8 @@ juce::AudioProcessorEditor* Processor::createEditor() { return new Editor(*this)
 void Processor::getStateInformation(juce::MemoryBlock& destData) {
     juce::ValueTree t(juce::Identifier(type_.info.state_tag));
     t.setProperty("version", 1, nullptr);
+    t.setProperty("editorScale", editorScale, nullptr);
+    if (bpm_.load() > 0) t.setProperty("bpm", bpm_.load(), nullptr);   // synced times are right at load
     t.setProperty("roms", romPaths_.joinIntoString("\n"), nullptr);
     if (hasPanel()) {
         t.setProperty("editor", hardware_ ? "hardware" : "easy", nullptr);
@@ -228,6 +336,8 @@ void Processor::setStateInformation(const void* data, int sizeInBytes) {
     auto t = juce::ValueTree::readFromData(data, size_t(sizeInBytes));
     if (!t.hasType(juce::Identifier(type_.info.state_tag))) return;
     if (auto p = t.getChildWithName(params.state.getType()); p.isValid()) params.replaceState(p);
+    if (t.hasProperty("bpm") && bpm_.load() <= 0) bpm_.store(double(t.getProperty("bpm")));
+    if (t.hasProperty("editorScale")) editorScale = std::clamp(float(t.getProperty("editorScale")), 0.5f, 3.0f);
     if (hasPanel()) {
         hardware_ = t.getProperty("editor").toString() == "hardware";
         if (auto in = t.getChildWithName("panelInputs"); in.isValid())
@@ -248,6 +358,7 @@ void Processor::setStateInformation(const void* data, int sizeInBytes) {
         romPaths_ = paths;
     }
     if (!ms.empty() || !host_->has_machine()) boot(ms);
+    updateSynced();
     host_->sync();   // the session's parameters before the next block (offline renders)
 }
 

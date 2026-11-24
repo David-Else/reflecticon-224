@@ -45,16 +45,28 @@ public:
     // Files or folders; boots on success and remembers the paths for new instances.
     void loadRoms(const juce::StringArray& paths);
     juce::String status() const { return status_; }
+    bool statusOk() const { return statusOk_; }   // running on a full ROM set; status() names it
     // Set the parameters from a machine preset, as one gesture each (hosts record it).
     void applyPreset(const Preset& p);
     // The editor shown: true = the hardware panel (only if the machine has one). Saved with the
     // session.
     bool hasPanel() const { return !type_.info.panel.empty(); }
     bool hardwareMode() const { return hasPanel() && hardware_; }
+    float editorScale = 1.0f;   // the editor window's size against its native layout (saved)
     void setHardwareMode(bool on) { hardware_ = on; }
     // Take settings the panel put the machine in into the host parameters (PanelState::adopt).
     // Called by the timer; public for tools that run without a message loop.
     void adoptPanelSettings();
+
+    // ---- tempo sync (Param::tempo_sync) ----
+    // The note values of a Sync menu, index 0 = off; and their length in quarter notes.
+    static const juce::StringArray& syncChoices();
+    static double syncBeats(int choice);
+    static juce::String syncId(const Param& p) { return juce::String(p.id) + "Sync"; }
+    // The note value parameter i follows, or 0 when it follows its own control.
+    int syncChoice(size_t i) const;
+    // Work out the values the machine gets (any thread); the host's next poll applies them.
+    void updateSynced();
 
 private:
     void timerCallback() override;
@@ -68,11 +80,25 @@ private:
     RomSet roms_;
     juce::StringArray romPaths_;
     juce::String status_ = "no ROMs";
+    bool statusOk_ = false;
     std::unique_ptr<juce::PropertiesFile> settings_;
     juce::AudioBuffer<float> scratch_;   // the mono mix, and a copy of a mono input
+    static constexpr int kDryRing = 1 << 16;   // the dry signal, delayed by the latency for the mix
+    juce::AudioBuffer<float> dry_;
+    int dryAt_ = 0;
+    std::atomic<float>* mix_ = nullptr;
+    float mixPrev_ = 1.0f;
     int maxBlock_ = 0;
     bool hardware_ = false;
     uint32_t adoptedSerial_ = 0;
+    struct Synced {   // a time the host tempo may set: what the machine gets instead of the control
+        size_t index = 0;
+        const std::atomic<float>* knob = nullptr;
+        const std::atomic<float>* choice = nullptr;
+        std::atomic<float> value{0.0f};
+    };
+    std::vector<std::unique_ptr<Synced>> synced_;
+    std::atomic<double> bpm_{0.0};   // the host's tempo, 0 until a block has told us
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Processor)
 };

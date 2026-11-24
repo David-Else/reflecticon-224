@@ -25,7 +25,43 @@ struct Param {
     float min = 0, max = 1, def = 0;
     std::vector<std::string> choices;   // Choice: the names (min = 0, max = size - 1)
     std::string unit;                   // Float/Int: shown after the value when no readout
+    std::string help;                   // the editor's tooltip: what the control does (describe())
+    std::string group, short_name;      // the editor's box for it, and its name there (group())
+    bool momentary = false;             // Bool: a push button, on while held (momentary())
+    std::string button;                 // its label
+    bool tempo_sync = false;            // a time (ms) or rate (Hz) the host tempo may set (tempo_sync())
 };
+
+// A box in the editor for related controls (a channel's), two boxes to a row in Info::groups order,
+// the controls named shorter inside it: group(i.params, "Channel A", {{"delayA", "Delay"}, ...}).
+inline void group(std::vector<Param>& params, const char* name,
+                  std::initializer_list<std::pair<const char*, const char*>> members) {
+    for (auto& [id, short_name] : members)
+        for (auto& p : params)
+            if (p.id == id) p.group = name, p.short_name = short_name;
+}
+
+// Bool controls that are push buttons on the hardware, on while held: {{"id", "button label"}, ...}.
+inline void momentary(std::vector<Param>& params, std::initializer_list<std::pair<const char*, const char*>> buttons) {
+    for (auto& [id, label] : buttons)
+        for (auto& p : params)
+            if (p.id == id) p.momentary = true, p.button = label;
+}
+
+// Times in ms, or rates in Hz (one cycle per note), that may follow the host tempo: each gets a
+// Sync menu (off or a note value).
+inline void tempo_sync(std::vector<Param>& params, std::initializer_list<const char*> ids) {
+    for (auto* id : ids)
+        for (auto& p : params)
+            if (p.id == id) p.tempo_sync = true;
+}
+
+// Tooltips by parameter id, after the table: describe(i.params, {{"decay", "..."}, ...}).
+inline void describe(std::vector<Param>& params, std::initializer_list<std::pair<const char*, const char*>> help) {
+    for (auto& [id, text] : help)
+        for (auto& p : params)
+            if (p.id == id) p.help = text;
+}
 
 struct Preset {
     std::string name;
@@ -92,6 +128,8 @@ struct Info {
     std::vector<RomSpec> roms;
     std::string about;         // one or two lines for the editor (what it is, non-affiliation)
     PanelLayout panel;         // the front panel for hardware mode; no elements = easy mode only
+    std::vector<std::string> groups;   // the editor's boxes in order (Param::group), two to a row
+    std::string mix_group;             // the box for the kit's Mix control, if any
 };
 
 struct MachineType {

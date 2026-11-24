@@ -7,13 +7,21 @@
 # Without FETCHCONTENT_SOURCE_DIR_JUCE, JUCE 8.0.14 is fetched from GitHub.
 # Bring your own ROMs: nothing here or in the binaries holds ROM bytes.
 cmake_minimum_required(VERSION 3.22)
-project(Reflecticon VERSION 0.1.0 LANGUAGES C CXX)
+project(Reflecticon VERSION 0.2.0 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Hide every symbol but the plugin entry points: JUCE has inline variables and templates that are
+# otherwise exported as weak symbols, and macOS coalesces those across every plugin a host loads,
+# so one JUCE plugin ends up using another's (corrupted state, crashes on restore in Live).
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_OBJC_VISIBILITY_PRESET hidden)
+set(CMAKE_OBJCXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "" FORCE)
 endif()

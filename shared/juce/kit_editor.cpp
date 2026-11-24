@@ -5,7 +5,9 @@ namespace kit {
 namespace {
 const juce::Colour kBg{0xff1d1f22}, kPanel{0xff0b0b0b}, kLed{0xffff3b2f}, kText{0xffe6e6e6}, kDim{0xff7a7d82},
     kAccent{0xffd9a441};
-constexpr int kW = 560, kRowH = 30, kPad = 16, kNameW = 150, kReadW = 110;
+constexpr int kW = 560, kRowH = 30, kPad = 16, kNameW = 150, kReadW = 130;
+// grouped controls: boxes kBoxW wide, kGap apart; the shared controls in columns as wide below
+constexpr int kBoxW = 520, kGap = 16, kBoxHead = 28, kBoxFoot = 8, kBoxNameW = 104, kBoxInset = 10;
 constexpr float kPanelPxPerMm = 2.4f;   // the hardware panel's scale (a 19" face is ~1160 px)
 }  // namespace
 
@@ -23,11 +25,6 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
     title_.setFont(juce::FontOptions(22.0f, juce::Font::bold));
     title_.setColour(juce::Label::textColourId, kText);
     addAndMakeVisible(title_);
-    about_.setText(info.about, juce::dontSendNotification);
-    about_.setFont(juce::FontOptions(12.0f));
-    about_.setColour(juce::Label::textColourId, kDim);
-    about_.setJustificationType(juce::Justification::topLeft);
-    addAndMakeVisible(about_);
 
     panel_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 22.0f, juce::Font::bold));
     panel_.setColour(juce::Label::textColourId, kLed);
@@ -35,9 +32,16 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
     panel_.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(panel_);
 
+    for (auto& g : info.groups) groups_.push_back(juce::String(g));
     for (auto& prm : info.params) {
         auto r = std::make_unique<Row>();
-        r->name.setText(prm.name, juce::dontSendNotification);
+        if (!prm.group.empty()) {
+            const juce::String g(prm.group);
+            auto at = std::find(groups_.begin(), groups_.end(), g);
+            r->group = int(at - groups_.begin());
+            if (at == groups_.end()) groups_.push_back(g);
+        }
+        r->name.setText(r->group >= 0 && !prm.short_name.empty() ? prm.short_name : prm.name, juce::dontSendNotification);
         r->name.setColour(juce::Label::textColourId, kText);
         r->readout.setColour(juce::Label::textColourId, kAccent);
         r->readout.setJustificationType(juce::Justification::centredRight);
@@ -48,6 +52,28 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
             r->combo = std::make_unique<juce::ComboBox>();
             for (size_t i = 0; i < prm.choices.size(); i++) r->combo->addItem(prm.choices[i], int(i) + 1);
             r->ca = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(proc_.params, prm.id, *r->combo);
+        } else if (prm.kind == Param::Bool && prm.momentary) {
+            // on while held, and for at least half a second (a click still does the job)
+            r->push = std::make_unique<juce::TextButton>(prm.button.empty() ? prm.name : prm.button);
+            auto* param = proc_.params.getParameter(prm.id);
+            auto pressedAt = std::make_shared<juce::uint32>(0);
+            r->push->onStateChange = [b = r->push.get(), param, pressedAt] {
+                const bool down = b->isDown();
+                if (down && param->getValue() < 0.5f) {
+                    *pressedAt = juce::Time::getMillisecondCounter();
+                    param->beginChangeGesture();
+                    param->setValueNotifyingHost(1.0f);
+                } else if (!down && param->getValue() > 0.5f && *pressedAt) {
+                    const auto held = juce::Time::getMillisecondCounter() - *pressedAt;
+                    *pressedAt = 0;
+                    auto release = [param] {
+                        param->setValueNotifyingHost(0.0f);
+                        param->endChangeGesture();
+                    };
+                    if (held >= 500) release();
+                    else juce::Timer::callAfterDelay(int(500 - held), release);
+                }
+            };
         } else if (prm.kind == Param::Bool) {
             r->toggle = std::make_unique<juce::ToggleButton>();
             r->ba = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(proc_.params, prm.id, *r->toggle);
@@ -55,6 +81,41 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
             r->slider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal, juce::Slider::NoTextBox);
             r->sa = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(proc_.params, prm.id, *r->slider);
         }
+        addAndMakeVisible(r->control());
+        if (prm.tempo_sync) {
+            r->sync = std::make_unique<juce::ComboBox>();
+            r->sync->addItemList(Processor::syncChoices(), 1);
+            r->syncA = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(proc_.params, Processor::syncId(prm), *r->sync);
+            r->sync->setTooltip(prm.unit == "Hz"
+                                    ? "Follow the host tempo: one cycle per this note value (T triplet, D dotted), within "
+                                      "the control's range. Off: the control sets it."
+                                    : "Follow the host tempo: the time is this note value (T triplet, D dotted), within the "
+                                      "control's range. Off: the control sets it.");
+            addAndMakeVisible(*r->sync);
+        }
+        r->name.setTooltip(prm.help);
+        if (auto* tc = dynamic_cast<juce::SettableTooltipClient*>(r->control())) tc->setTooltip(prm.help);
+        rows_.push_back(std::move(r));
+    }
+    {   // the kit's wet/dry, after the machine's own controls
+        auto r = std::make_unique<Row>();
+        r->name.setText("Mix", juce::dontSendNotification);
+        r->name.setColour(juce::Label::textColourId, kText);
+        r->readout.setColour(juce::Label::textColourId, kAccent);
+        r->readout.setJustificationType(juce::Justification::centredRight);
+        r->readout.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+        r->slider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal, juce::Slider::NoTextBox);
+        r->sa = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(proc_.params, "mix", *r->slider);
+        if (!info.mix_group.empty()) {
+            auto at = std::find(groups_.begin(), groups_.end(), juce::String(info.mix_group));
+            r->group = int(at - groups_.begin());
+            if (at == groups_.end()) groups_.push_back(juce::String(info.mix_group));
+        }
+        const char* help = "Dry signal against the effect, after the machine: 100 % is the effect alone, as the hardware gives it.";
+        r->name.setTooltip(help);
+        r->slider->setTooltip(help);
+        addAndMakeVisible(r->name);
+        addAndMakeVisible(r->readout);
         addAndMakeVisible(r->control());
         rows_.push_back(std::move(r));
     }
@@ -82,6 +143,7 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
         addAndMakeVisible(modeButton_);
     }
     timerCallback();
+    setResizable(true, true);   // scaled as a whole, its proportions kept (layoutSize)
     setMode(proc_.hardwareMode());
     startTimerHz(30);
 }
@@ -94,33 +156,91 @@ void Editor::setMode(bool hardware) {
         panelView_->setVisible(hardware);
         if (!hardware) panelView_->releaseAll();
     }
-    about_.setVisible(!hardware);
     panel_.setVisible(!hardware);
     for (auto& r : rows_) {
         r->name.setVisible(!hardware);
         r->readout.setVisible(!hardware);
         r->control()->setVisible(!hardware);
+        if (r->sync) r->sync->setVisible(!hardware);
     }
     layoutSize();
 }
 
+// The layout is made at a native size (one per mode) and drawn scaled to the window: the window
+// keeps the native proportions, between half and three times the native size.
 void Editor::layoutSize() {
     if (proc_.hardwareMode()) {
         const auto& L = proc_.info().panel;
         const int w = int(std::lround(L.width * kPanelPxPerMm)), h = int(std::lround(L.height * kPanelPxPerMm));
-        setSize(w + 2 * kPad, kPad + 30 + 8 + h + 12 + 28 + 8 + 20 + kPad);
+        nativeW_ = w + 2 * kPad;
+        nativeH_ = kPad + 30 + 8 + h + 12 + 28 + 8 + 20 + kPad;
     } else {
-        setSize(kW, kPad + 30 + 34 + 52 + 12 + int(rows_.size()) * kRowH + 12 + 28 + 8 + 20 + kPad);
+        const int g = int(groups_.size());
+        nativeW_ = g ? 2 * kPad + columns() * kBoxW + (columns() - 1) * kGap : kW;
+        nativeH_ = kPad + 30 + 8 + 52 + 12 + easyHeight() + 12 + 28 + 8 + 20 + kPad;
     }
+    const float scale = std::clamp(proc_.editorScale, 0.5f, 3.0f);
+    setResizeLimits(nativeW_ / 2, nativeH_ / 2, nativeW_ * 3, nativeH_ * 3);
+    if (auto* c = getConstrainer()) c->setFixedAspectRatio(double(nativeW_) / double(nativeH_));
+    setSize(int(std::lround(nativeW_ * scale)), int(std::lround(nativeH_ * scale)));
     resized();
+}
+
+std::vector<int> Editor::groupCounts(int& shared) const {
+    std::vector<int> n(groups_.size(), 0);
+    shared = 0;
+    for (auto& r : rows_) r->group >= 0 ? n[size_t(r->group)]++ : shared++;
+    return n;
+}
+
+// Boxes two to a row (each row as tall as its tallest box), then the shared controls in as many
+// columns.
+int Editor::easyHeight() const {
+    if (groups_.empty()) return int(rows_.size()) * kRowH;
+    int shared = 0;
+    auto n = groupCounts(shared);
+    const int cols = columns();
+    int h = 0;
+    for (size_t k = 0; k < n.size(); k += size_t(cols)) {
+        int most = 0;
+        for (size_t j = k; j < std::min(n.size(), k + size_t(cols)); j++) most = std::max(most, n[j]);
+        h += (k ? kGap : 0) + kBoxHead + most * kRowH + kBoxFoot;
+    }
+    if (shared) h += 12 + (shared + cols - 1) / cols * kRowH;
+    return h;
 }
 
 Editor::~Editor() { stopTimer(); }
 
-void Editor::paint(juce::Graphics& g) { g.fillAll(kBg); }
+void Editor::paint(juce::Graphics& g) {
+    g.fillAll(kBg);
+    if (proc_.hardwareMode() || boxes_.empty() || nativeW_ <= 0) return;
+    g.addTransform(juce::AffineTransform::scale(float(getWidth()) / float(nativeW_)));   // as the children
+    for (size_t i = 0; i < boxes_.size(); i++) {
+        auto box = boxes_[i].toFloat();
+        g.setColour(juce::Colour(0xff25282c));
+        g.fillRoundedRectangle(box, 6.0f);
+        g.setColour(juce::Colour(0xff3a3e43));
+        g.drawRoundedRectangle(box.reduced(0.5f), 6.0f, 1.0f);
+        g.setColour(kText);
+        g.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+        g.drawText(groups_[i], boxes_[i].withHeight(kBoxHead).reduced(kBoxInset, 0), juce::Justification::centredLeft);
+    }
+}
 
 void Editor::resized() {
-    auto b = getLocalBounds().reduced(kPad);
+    if (nativeW_ <= 0 || nativeH_ <= 0) return;
+    const float scale = float(getWidth()) / float(nativeW_);
+    proc_.editorScale = scale;
+    layoutNative();
+    repaint();   // the boxes
+    // The resize corner is placed by JUCE in window coordinates, so it stays unscaled.
+    for (auto* c : getChildren())
+        if (c != &tooltips_ && c != resizableCorner.get()) c->setTransform(juce::AffineTransform::scale(scale));
+}
+
+void Editor::layoutNative() {
+    auto b = juce::Rectangle<int>(nativeW_, nativeH_).reduced(kPad);
     auto top = b.removeFromTop(30);
     if (panelView_) modeButton_.setBounds(top.removeFromRight(140).reduced(0, 2));
     title_.setBounds(top);
@@ -137,16 +257,54 @@ void Editor::resized() {
         status_.setBounds(b.removeFromTop(20));
         return;
     }
-    about_.setBounds(b.removeFromTop(34));
+    b.removeFromTop(8);
     panel_.setBounds(b.removeFromTop(52));
     b.removeFromTop(12);
-    for (auto& r : rows_) {
-        auto row = b.removeFromTop(kRowH);
-        r->name.setBounds(row.removeFromLeft(kNameW));
-        r->readout.setBounds(row.removeFromRight(kReadW));
+    auto place = [](Row& r, juce::Rectangle<int> row, int nameW) {
+        r.name.setBounds(row.removeFromLeft(nameW));
+        r.readout.setBounds(row.removeFromRight(kReadW));
+        if (r.sync) r.sync->setBounds(row.removeFromRight(76).reduced(2, 3));
         auto c = row.reduced(6, 3);
-        if (r->toggle) c = c.withWidth(40);
-        r->control()->setBounds(c);
+        if (r.toggle) c = c.withWidth(40);
+        if (r.push) c = c.withWidth(140);
+        r.control()->setBounds(c);
+    };
+    boxes_.clear();
+    if (groups_.empty()) {
+        for (auto& r : rows_) place(*r, b.removeFromTop(kRowH), kNameW);
+    } else {
+        const int cols = columns();
+        auto rows = b.removeFromTop(easyHeight());
+        int nShared = 0;
+        auto n = groupCounts(nShared);
+        std::vector<Row*> shared;
+        for (auto& r : rows_)
+            if (r->group < 0) shared.push_back(r.get());
+        for (size_t k = 0; k < n.size(); k += size_t(cols)) {
+            int most = 0;
+            for (size_t j = k; j < std::min(n.size(), k + size_t(cols)); j++) most = std::max(most, n[j]);
+            if (k) rows.removeFromTop(kGap);
+            auto area = rows.removeFromTop(kBoxHead + most * kRowH + kBoxFoot);
+            for (size_t j = k; j < std::min(n.size(), k + size_t(cols)); j++) {
+                auto box = area.removeFromLeft(kBoxW);
+                area.removeFromLeft(kGap);
+                boxes_.push_back(box);
+                auto in = box.reduced(kBoxInset, 0);
+                in.removeFromTop(kBoxHead);
+                for (auto& r : rows_)
+                    if (r->group == int(j)) place(*r, in.removeFromTop(kRowH), kBoxNameW);
+            }
+        }
+        if (!shared.empty()) {
+            rows.removeFromTop(12);
+            const int per = (int(shared.size()) + cols - 1) / cols;
+            for (int k = 0; k < cols; k++) {
+                auto col = rows.removeFromLeft(kBoxW).reduced(kBoxInset, 0);
+                rows.removeFromLeft(kGap);
+                for (int j = k * per; j < std::min(int(shared.size()), (k + 1) * per); j++)
+                    place(*shared[size_t(j)], col.removeFromTop(kRowH), kNameW);
+            }
+        }
     }
     b.removeFromTop(12);
     auto bar = b.removeFromTop(28);
@@ -168,20 +326,27 @@ void Editor::timerCallback() {
         auto& row = *rows_[i];
         juce::String text;
         bool used = true;
-        if (have && i < r.param.size()) {
+        const juce::String id = i < info.params.size() ? juce::String(info.params[i].id) : juce::String("mix");
+        if (have && i < info.params.size() && i < r.param.size()) {
             text = r.param[i];
             used = !text.isEmpty();
-        } else if (auto* prm = proc_.params.getParameter(info.params[i].id)) {
+        } else if (auto* prm = proc_.params.getParameter(id)) {
             text = prm->getCurrentValueAsText();
         }
+        const int sc = row.sync ? proc_.syncChoice(i) : 0;
+        if (sc > 0 && used) text = Processor::syncChoices()[sc] + juce::String(juce::CharPointer_UTF8(" \xc2\xb7 ")) + text;
         row.readout.setText(used ? text : juce::String(juce::CharPointer_UTF8("\xe2\x80\x94")), juce::dontSendNotification);
         row.name.setAlpha(used ? 1.0f : 0.4f);
-        row.control()->setAlpha(used ? 1.0f : 0.4f);
+        row.control()->setAlpha(used && sc == 0 ? 1.0f : 0.4f);   // the tempo sets it
     }
-    juce::String st = proc_.status();
-    if (!r.status.empty()) st += "  |  " + juce::String(r.status);
+    // only when something needs attention (no ROMs, a ROM problem, the machine's own notes); the
+    // ROM set in use is on the ROM button's tooltip
+    juce::String st = proc_.statusOk() ? juce::String() : proc_.status();
+    if (!r.status.empty()) st += (st.isEmpty() ? "" : "  |  ") + juce::String(r.status);
     status_.setText(st, juce::dontSendNotification);
+    romsButton_.setTooltip(proc_.statusOk() ? "In use: " + proc_.status() : juce::String("Choose the ROM files or their folder, or drop them on the window"));
     if (have && presetList_.empty()) refreshPresets();
+    presets_.setVisible(!have || !presetList_.empty());   // machines without factory presets: no menu
 }
 
 void Editor::refreshPresets() {
