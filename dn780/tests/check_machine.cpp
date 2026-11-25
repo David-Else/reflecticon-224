@@ -7,6 +7,7 @@
 #define KIT_COUNT_ALLOCATIONS
 #include "../../shared/tests/host_checks.hpp"
 #include "../plugin/dn780_machine.hpp"
+#include "../core/dn780.hpp"
 #include <dirent.h>
 #include <fstream>
 
@@ -74,7 +75,11 @@ int main(int argc, char** argv) {
         host.install(t.boot(roms, "", &err));
         auto r = host.readouts();
         bool ok = true;
-        for (int k = 0; k < 8; k++) ok &= r.param[size_t(k)] == c.want[k];
+        for (int k = 0; k < 8; k++) {   // pattern, level, LF, HF add what the digit means ("8 of 9 (density)")
+            std::string got = r.param[size_t(k)];
+            if (k >= 2 && k <= 5) got = got.substr(0, got.find(' '));
+            ok &= got == c.want[k];
+        }
         std::printf("  %s %-4s [%s]", ok ? "ok  " : "FAIL", c.name, r.panel.c_str());
         if (!ok)
             for (int k = 0; k < 8; k++) std::printf(" '%s'", r.param[size_t(k)].c_str());
@@ -86,7 +91,7 @@ int main(int argc, char** argv) {
         std::string err;
         auto m = t.boot(roms, "", &err);
         m->prepare(48000, 512);
-        m->set_params({0, 0x23, 8, 4, 4, 5, 6, 1, 0});   // H1 from the video: predelay 35 ms, decay 1.3 s
+        m->set_params({0, 0x23, 8, 4, 4, 5, 6, 1, 0, 5});   // H1 from the video: predelay 35 ms, decay 1.3 s
         auto ps = m->panel();
         auto ch = [](uint8_t v) {
             const uint8_t pat[] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
@@ -117,6 +122,66 @@ int main(int argc, char** argv) {
         std::printf("\n");
         bool ok = ps.size() == 26 && ps[0].name == "01 Hall 1" && ps[0].values[1] == 0x16 && ps.back().name == "33 Multitap Echo";
         std::printf("  %s 26 factory memories (20 reverbs, AL nL rE, dL At Ec), H1 predelay 16h\n", ok ? "ok  " : "FAIL");
+        fails += !ok;
+    }
+    {   // the free-running unit (the hardware panel): keys through the 8279 FIFO and interrupt
+        const auto& rom = roms.bytes(0);
+        auto fw = std::make_unique<dn780::Firmware>();
+        fw->boot(rom.data(), rom.size());
+        uint8_t uc[256], co[256];
+        fw->load(1, nullptr, 0, uc, co);   // memory 01: Hall 1, predelay 16h
+        fw->live_start();
+        const long ms = dn780::Firmware::kClock / 1000;
+        auto press = [&](uint8_t code) {
+            fw->live_key(code);
+            fw->live_run(100 * ms);
+        };
+        auto hold = [&](uint8_t bit, long t) {   // an F001 input held for t ms
+            fw->live_inputs(uint8_t(0xFF & ~bit));
+            fw->live_run(t * ms);
+            fw->live_inputs(0xFF);
+            fw->live_run(50 * ms);
+        };
+        bool ok = fw->live_ram(0x31) == 0x16;
+        press(0xF2);                       // PREDELAY
+        bool led = fw->live_display()[4] == 0x10;
+        hold(2, 5);                        // UP, a tap
+        int one = fw->live_ram(0x31);
+        hold(2, 600);                      // UP, held: repeats
+        int held = fw->live_ram(0x31);
+        hold(1, 5);                        // DOWN
+        int down = fw->live_ram(0x31);
+        ok &= led && one == 0x17 && held > one + 2 && down == held - 1;
+        std::printf("  %s panel: PREDELAY lights its LED, UP steps 16h->%02Xh, held ->%02Xh, DOWN ->%02Xh\n", ok ? "ok  " : "FAIL",
+                    one, held, down);
+        fails += !ok;
+        // STO 4 0 stores the setting in memory 40; 0 1 recalls Hall 1; 4 0 recalls the stored one
+        const int stored = down;
+        press(0xF4), press(0xD4), press(0xF0);
+        fw->live_run(3000 * ms);
+        auto ur = fw->user_ram();
+        bool st = ur.size() == 0x268 && ur[0x10 + 1] == stored;   // E060 = memory 40: E030.. image
+        press(0xF0), press(0xE4);
+        fw->live_run(1000 * ms);
+        int r01 = fw->live_ram(0x31);
+        press(0xD4), press(0xF0);
+        fw->live_run(1000 * ms);
+        int r40 = fw->live_ram(0x31);
+        ok = st && r01 == 0x16 && r40 == stored && fw->live_ram(0x38) == 40;
+        std::printf("  %s panel: STO 4 0 stores (E061 %02Xh), 0 1 recalls %02Xh, 4 0 recalls %02Xh (memory %d)\n", ok ? "ok  " : "FAIL",
+                    ur.size() > 0x11 ? ur[0x11] : 0, r01, r40, fw->live_ram(0x38));
+        fails += !ok;
+        // REV, held: the firmware's mute ramps the output record (rec63, D0FF) down, then back up
+        fw->live_key(0xEE);
+        fw->live_inputs(0xFB);
+        fw->live_run(300 * ms);
+        fw->live_program(uc, co);
+        int muted = co[0xFF];
+        fw->live_inputs(0xFF);
+        fw->live_run(300 * ms);
+        fw->live_program(uc, co);
+        ok = muted == 0 && co[0xFF] == 0x7F;
+        std::printf("  %s panel: REV held mutes (D0FF %02Xh), released unmutes (%02Xh)\n", ok ? "ok  " : "FAIL", muted, co[0xFF]);
         fails += !ok;
     }
     std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);

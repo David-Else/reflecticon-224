@@ -11,6 +11,9 @@ juce::Colour argb(uint32_t c, uint32_t fallback) { return juce::Colour(c ? c : f
 // Dial: 0 just left of 12 o'clock, 9 at about 10 o'clock, clockwise (the AMS knobs' printed scale).
 constexpr float kDialStart = -10.0f * juce::MathConstants<float>::pi / 180.0f;
 constexpr float kDialSpan = 288.0f * juce::MathConstants<float>::pi / 180.0f;
+// a dial's start angle and span (radians, clockwise from 12 o'clock) for its DialStyle
+float dialStart(const E& e) { return e.style == E::Dial300 ? -150.0f * juce::MathConstants<float>::pi / 180.0f : kDialStart; }
+float dialSpan(const E& e) { return e.style == E::Dial300 ? 300.0f * juce::MathConstants<float>::pi / 180.0f : kDialSpan; }
 
 // ---- 14-segment font for the alphanumerics (ASCII 32-95; DL1414-style upper case) ----
 // bits: 0 A top, 1 B, 2 C, 3 D bottom, 4 E, 5 F, 6 G1, 7 G2, 8 H, 9 J, 10 K, 11 L, 12 M, 13 N
@@ -24,12 +27,38 @@ const uint16_t kAlpha14[64] = {
 // ---- the knobs: a silver knurled skirt and cap with a pointer line ----
 class KnobLook : public juce::LookAndFeel_V4 {
 public:
-    void drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider&) override {
+    void drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider& sl) override {
         auto r = juce::Rectangle<float>(float(x), float(y), float(w), float(h)).reduced(1.0f);
         const float d = std::min(r.getWidth(), r.getHeight());
         r = r.withSizeKeepingCentre(d, d);
         const auto c = r.getCentre();
         const float ang = a0 + pos * (a1 - a0);
+        if (const int capArgb = int(sl.getProperties()["cap"]); capArgb != 0) {   // a coloured cap on a black body
+            // Matte, as the photos show it: a flat coloured disc in a finely fluted black body, lit
+            // softly from above; no sheen, no deep shading (which read as glossy plastic).
+            const auto col = juce::Colour(uint32_t(capArgb));
+            g.setColour(juce::Colours::black.withAlpha(0.35f));   // shadow
+            g.fillEllipse(r.translated(0.0f, d * 0.04f));
+            juce::ColourGradient body(juce::Colour(0xff262626), c.x, r.getY(), juce::Colour(0xff0c0c0c), c.x, r.getBottom(), false);
+            g.setGradientFill(body);
+            g.fillEllipse(r);
+            g.setColour(juce::Colour(0xff3a3a3a).withAlpha(0.5f));   // flutes, fixed to the body
+            for (int i = 0; i < 48; i++) {
+                const float a = float(i) * juce::MathConstants<float>::twoPi / 48.0f + ang;
+                const float s = std::sin(a), co = -std::cos(a);
+                g.drawLine(c.x + s * d * 0.45f, c.y + co * d * 0.45f, c.x + s * d * 0.49f, c.y + co * d * 0.49f, std::max(0.5f, d * 0.01f));
+            }
+            auto cap = r.reduced(d * 0.12f);
+            juce::ColourGradient cg(col.brighter(0.06f), cap.getX(), cap.getY(), col.darker(0.12f), cap.getX(), cap.getBottom(), false);
+            g.setGradientFill(cg);
+            g.fillEllipse(cap);
+            g.setColour(juce::Colours::black.withAlpha(0.35f));   // the cap's edge
+            g.drawEllipse(cap, std::max(0.5f, d * 0.012f));
+            g.setColour(col.getPerceivedBrightness() > 0.6f ? juce::Colour(0xff2a2a2a) : juce::Colour(0xfff4f4f0));
+            const float s = std::sin(ang), co = -std::cos(ang);
+            g.drawLine(c.x + s * d * 0.05f, c.y + co * d * 0.05f, c.x + s * d * 0.36f, c.y + co * d * 0.36f, std::max(1.0f, d * 0.045f));
+            return;
+        }
         g.setColour(juce::Colours::black.withAlpha(0.45f));   // shadow
         g.fillEllipse(r.translated(0.0f, d * 0.05f));
         juce::ColourGradient skirt(juce::Colour(0xffe6e6e2), c.x - d * 0.4f, c.y - d * 0.4f, juce::Colour(0xff6c6d6e), c.x + d * 0.4f,
@@ -112,8 +141,9 @@ public:
             g.drawRoundedRectangle(r.expanded(0.2f * s), corner, std::max(1.2f, 0.35f * s));
         }
         if (!e_.text.empty()) {
-            g.setColour(juce::Colour(0xff151515));
-            g.setFont(v_.legendFont(e_.h * 0.35f, false));
+            g.setColour(argb(e_.colour, 0xff151515));   // colour: the legend's (white on dark caps)
+            // the keypad's printed caps carry big legends (the RMX16 photos: ~60 % of the cap)
+            g.setFont(v_.legendFont(e_.h * (e_.style == E::KeypadCream ? 0.58f : 0.35f), false));
             g.drawText(juce::String::fromUTF8(e_.text.c_str()), r, juce::Justification::centred, false);
         }
         if (led_) {
@@ -146,8 +176,9 @@ private:
 class Knob : public juce::Slider {
 public:
     Knob(PanelView& v, const E& e) : juce::Slider(juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox), v_(v), e_(e) {
-        setRotaryParameters(kDialStart + juce::MathConstants<float>::twoPi, kDialStart + juce::MathConstants<float>::twoPi + kDialSpan, true);
+        setRotaryParameters(dialStart(e) + juce::MathConstants<float>::twoPi, dialStart(e) + juce::MathConstants<float>::twoPi + dialSpan(e), true);
         setMouseDragSensitivity(220);
+        getProperties().set("cap", int(e.colour));
         auto& proc = v.processor();
         if (!e.param.empty()) {
             if (auto* prm = dynamic_cast<juce::RangedAudioParameter*>(proc.params.getParameter(e.param))) {
@@ -410,12 +441,33 @@ void PanelView::paint(juce::Graphics& g) {
             }
             break;
         case E::Frame:
-            if (e.style == 1) {
+            if (e.style == 1) {   // a filled plate; size = its corner radius in mm (default 0.5)
                 g.setColour(argb(e.colour, 0xffb0b0b0));
-                g.fillRoundedRectangle(r, 0.5f * s);
-            } else {
+                g.fillRoundedRectangle(r, (e.size > 0 ? e.size : 0.5f) * s);
+            } else if (e.text.empty()) {
                 g.setColour(ink.withAlpha(0.9f));
                 g.drawRoundedRectangle(r, 0.4f * s, std::max(1.0f, 0.32f * s));
+            } else {   // the caption sits in a gap in the top edge
+                auto f = legendFont(e.size > 0 ? e.size : 2.1f);
+                const auto cap = juce::String::fromUTF8(e.text.c_str());
+                const float tw = juce::GlyphArrangement::getStringWidth(f, cap) + 1.6f * s;
+                const float rad = 0.8f * s, cx = r.getCentreX();
+                juce::Path p;
+                p.startNewSubPath(cx + tw / 2, r.getY());
+                p.lineTo(r.getRight() - rad, r.getY());
+                p.quadraticTo(r.getRight(), r.getY(), r.getRight(), r.getY() + rad);
+                p.lineTo(r.getRight(), r.getBottom() - rad);
+                p.quadraticTo(r.getRight(), r.getBottom(), r.getRight() - rad, r.getBottom());
+                p.lineTo(r.getX() + rad, r.getBottom());
+                p.quadraticTo(r.getX(), r.getBottom(), r.getX(), r.getBottom() - rad);
+                p.lineTo(r.getX(), r.getY() + rad);
+                p.quadraticTo(r.getX(), r.getY(), r.getX() + rad, r.getY());
+                p.lineTo(cx - tw / 2, r.getY());
+                const auto col = argb(e.colour, layout_.ink).withAlpha(0.85f);
+                g.setColour(col);
+                g.strokePath(p, juce::PathStrokeType(std::max(1.0f, 0.25f * s)));
+                g.setFont(f);
+                g.drawText(cap, juce::Rectangle<float>(tw, f.getHeight()).withCentre({cx, r.getY()}), juce::Justification::centred, false);
             }
             break;
         case E::Path:
@@ -423,13 +475,17 @@ void PanelView::paint(juce::Graphics& g) {
             g.fillPath(art_[i], juce::AffineTransform::scale(s));
             break;
         case E::Window: {
-            g.setColour(juce::Colour(0xff070303));
-            g.fillRoundedRectangle(r.expanded(0.6f * s), 0.4f * s);
-            juce::ColourGradient wg(juce::Colour(0xff2a0a0a), r.getX(), r.getY(), juce::Colour(0xff120404), r.getX(), r.getBottom(), false);
+            const auto tint = argb(e.colour, 0xff2a0a0a);
+            const float rad = e.style == 1 ? r.getHeight() / 2 : 0.0f;
+            g.setColour(tint.darker(0.8f));
+            g.fillRoundedRectangle(r.expanded(0.6f * s), rad > 0 ? rad + 0.6f * s : 0.4f * s);
+            juce::ColourGradient wg(tint, r.getX(), r.getY(), tint.darker(0.55f), r.getX(), r.getBottom(), false);
             g.setGradientFill(wg);
-            g.fillRect(r);
-            g.setColour(juce::Colours::white.withAlpha(0.035f));   // the filter's sheen
-            g.fillRect(r.withHeight(r.getHeight() * 0.35f));
+            g.fillRoundedRectangle(r, rad);
+            if (rad == 0.0f) {   // the filter's sheen (a smoked pill window has none in the photos)
+                g.setColour(juce::Colours::white.withAlpha(0.035f));
+                g.fillRoundedRectangle(r.withHeight(r.getHeight() * 0.35f), 0.0f);
+            }
             break;
         }
         case E::Text: {
@@ -491,7 +547,8 @@ void PanelView::paintDigit(juce::Graphics& g, const E& e, uint8_t segs) {
     const auto r = mm(e.x, e.y, e.w, e.h);
     const auto col = argb(e.colour, 0xffff2a1a);
     // a 12 x 18 cell: the digit in 0..10, the point at 10.8; slanted ~7 degrees
-    const float sx = r.getWidth() / 12.0f, sy = r.getHeight() / 18.0f, t = 1.55f, gp = 0.28f, slant = 0.12f;
+    // the segment width in cell units: `size` per display (the photos), else 1.55 (~9 % of the height)
+    const float sx = r.getWidth() / 12.0f, sy = r.getHeight() / 18.0f, t = e.size > 0 ? e.size : 1.55f, gp = 0.28f, slant = 0.12f;
     auto P = [&](float x, float y) { return juce::Point<float>(r.getX() + (x + (18.0f - y) * slant) * sx, r.getY() + y * sy); };
     auto hseg = [&](float x0, float x1, float y) {
         juce::Path p;
@@ -578,16 +635,29 @@ void PanelView::paintAlpha(juce::Graphics& g, const E& e) {
 void PanelView::paintDial(juce::Graphics& g, const E& e) {
     const auto r = mm(e.x, e.y, e.w, e.h);
     const auto c = r.getCentre();
-    const int n = int(e.text.size());
-    if (n < 2) return;
     const float s = pxPerMm();
     const float cap = e.size > 0 ? e.size : 2.2f;   // numeral cap height
-    const float R = r.getWidth() / 2 + (0.75f * cap + 0.8f) * s;
     g.setColour(juce::Colour(layout_.ink));
     auto f = legendFont(cap);
     g.setFont(f);
+    if (auto bar = e.text.find('|'); bar != std::string::npos) {   // a label at each end of the travel
+        const float R = r.getWidth() / 2 + (0.6f * cap + 1.0f) * s;
+        const std::string ends[2] = {e.text.substr(0, bar), e.text.substr(bar + 1)};
+        for (int i = 0; i < 2; i++) {
+            const float a = dialStart(e) + dialSpan(e) * float(i);
+            const juce::Point<float> p(c.x + std::sin(a) * R, c.y - std::cos(a) * R);
+            const auto t = juce::String::fromUTF8(ends[i].c_str());
+            const float tw = juce::GlyphArrangement::getStringWidth(f, t) + 1.0f * s;
+            g.drawText(t, juce::Rectangle<float>(tw, f.getHeight()).withCentre(p.translated(i ? tw * 0.3f : -tw * 0.3f, 0.0f)),
+                       juce::Justification::centred, false);
+        }
+        return;
+    }
+    const int n = int(e.text.size());
+    if (n < 2) return;
+    const float R = r.getWidth() / 2 + (0.75f * cap + 0.8f) * s;
     for (int i = 0; i < n; i++) {
-        const float a = kDialStart + kDialSpan * float(i) / float(n - 1);
+        const float a = dialStart(e) + dialSpan(e) * float(i) / float(n - 1);
         const juce::Point<float> p(c.x + std::sin(a) * R, c.y - std::cos(a) * R);
         g.drawText(juce::String::charToString(juce::juce_wchar(e.text[size_t(i)])), juce::Rectangle<float>(4 * s, 4 * s).withCentre(p),
                    juce::Justification::centred, false);

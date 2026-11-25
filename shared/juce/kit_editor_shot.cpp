@@ -3,7 +3,8 @@
 // the remembered paths). Not shipped. Values are plain (e.g. decay=20). `hardware` shows the
 // hardware panel; `press=` presses panel keys (decimal or 0x ids) in turn, 150 ms each, 250 ms
 // apart, with audio running, then lets 1.5 s pass and adopts what the panel set. `wait=3` plays 3 s more first; `bpm=120` plays as
-// a host at that tempo (for the Sync menus, e.g. delayASync=6).
+// a host at that tempo (for the Sync menus, e.g. delayASync=6). `preset=3` applies the machine's third preset
+// (1-based, after the other settings) and lists them all.
 #include "kit_processor.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -26,6 +27,7 @@ int main(int argc, char** argv) {
     juce::StringArray presses;
     FixedTempo tempo;
     double wait = 0;   // `wait=3`: seconds more of audio before the snapshot
+    int preset = 0;    // `preset=3`: 1-based
     proc->setPlayHead(&tempo);
     for (int i = 2; i < argc; i++) {
         juce::String a(argv[i]);
@@ -35,6 +37,10 @@ int main(int argc, char** argv) {
         }
         if (a.startsWith("wait=")) {
             wait = a.fromFirstOccurrenceOf("=", false, false).getDoubleValue();
+            continue;
+        }
+        if (a.startsWith("preset=")) {
+            preset = a.fromFirstOccurrenceOf("=", false, false).getIntValue();
             continue;
         }
         if (a.startsWith("bpm=")) {
@@ -59,6 +65,14 @@ int main(int argc, char** argv) {
         }
     };
     run(0.43);
+    if (preset > 0) {
+        auto ps = proc->host().presets();
+        for (size_t i = 0; i < ps.size(); i++) std::printf("  preset %zu: %s%s\n", i + 1, ps[i].name.c_str(), int(i) + 1 == preset ? "  <-" : "");
+        if (preset <= int(ps.size())) proc->applyPreset(ps[size_t(preset - 1)]);
+        proc->updateSynced();
+        proc->host().sync();
+        run(0.5);
+    }
     for (auto& t : presses) {
         int id = t.trim().startsWithIgnoreCase("0x") ? t.trim().substring(2).getHexValue32() : t.trim().getIntValue();
         proc->host().panel_key(id, true);
@@ -76,6 +90,13 @@ int main(int argc, char** argv) {
         run(0.5);
     }
     run(wait);
+    if (!presses.isEmpty() && wait > 0) {   // panels that time keys by the clock (a held reverb clear)
+        juce::Thread::sleep(int(wait * 1000));
+        proc->host().refresh_panel();
+        proc->adoptPanelSettings();
+        proc->host().sync();
+        run(0.1);
+    }
     proc->host().refresh_panel();
     proc->host().refresh_readouts();
     std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());

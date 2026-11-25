@@ -44,6 +44,7 @@ public:
         return 0;
     }
     const Firmware& firmware() const { return fw_; }
+    Firmware& firmware() { return fw_; }   // the free-running unit (Firmware::live_*), control thread
 
     // Allocates. Call before audio starts or with audio stopped.
     void prepare(int host_rate, int max_block) {
@@ -62,6 +63,17 @@ public:
         int rc = fw_.load(preset, pokes, npoke, p.ucode, p.coef, &p.prog);
         if (rc != Firmware::Ok) return rc;
         if (unsupported(p.prog)) return Unsupported;
+        p.calibrated = calibrate_.load();
+        mailbox_.post(p);
+        return Firmware::Ok;
+    }
+    // Post microcode and coefficients the free-running unit has written (Firmware::live_program).
+    int post(const uint8_t ucode[256], const uint8_t coef[256], int prog) {
+        if (unsupported(prog)) return Unsupported;
+        Program p;
+        std::memcpy(p.ucode, ucode, 256);
+        std::memcpy(p.coef, coef, 256);
+        p.prog = prog;
         p.calibrated = calibrate_.load();
         mailbox_.post(p);
         return Firmware::Ok;

@@ -31,8 +31,10 @@ static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout(const Info
         if (p.tempo_sync)
             l.add(std::make_unique<AudioParameterChoice>(ParameterID{Processor::syncId(p), 1}, p.name + " sync",
                                                          Processor::syncChoices(), 0));
-    // The kit's own: wet/dry, after the machine (the hardware gives the effect only).
-    l.add(std::make_unique<AudioParameterFloat>(
+    // The kit's own: wet/dry, after the machine (the hardware gives the effect only), unless the unit
+    // has its own direct/effect mix.
+    if (!info.own_mix)
+        l.add(std::make_unique<AudioParameterFloat>(
         ParameterID{"mix", 1}, "Mix", NormalisableRange<float>(0.0f, 100.0f), 100.0f,
         AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(
             [](float v, int) { return String(roundToInt(v)) + " % wet"; })));
@@ -231,12 +233,19 @@ void Processor::adoptPanelSettings() {
 }
 
 void Processor::applyPreset(const Preset& p) {
-    for (size_t i = 0; i < p.values.size() && i < type_.info.params.size(); i++) {
-        auto* prm = params.getParameter(type_.info.params[i].id);
+    auto set = [](juce::RangedAudioParameter* prm, float plain) {
         prm->beginChangeGesture();
-        prm->setValueNotifyingHost(prm->convertTo0to1(p.values[i]));
+        prm->setValueNotifyingHost(prm->convertTo0to1(plain));
         prm->endChangeGesture();
+    };
+    for (size_t i = 0; i < p.values.size() && i < type_.info.params.size(); i++) {
+        const auto& info = type_.info.params[i];
+        if (info.tempo_sync && syncChoice(i) > 0)   // the preset's time, not the tempo's
+            if (auto* sp = params.getParameter(syncId(info))) set(sp, 0.0f);
+        set(params.getParameter(info.id), p.values[i]);
     }
+    if (p.mix >= 0)
+        if (auto* m = params.getParameter("mix")) set(m, p.mix);
 }
 
 void Processor::prepareToPlay(double sampleRate, int samplesPerBlock) {
@@ -247,7 +256,7 @@ void Processor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     dry_.setSize(2, kDryRing);
     dry_.clear();
     dryAt_ = 0;
-    mixPrev_ = mix_->load() * 0.01f;
+    mixPrev_ = mix_ ? mix_->load() * 0.01f : 1.0f;
 }
 
 bool Processor::isBusesLayoutSupported(const BusesLayout& layouts) const {
@@ -296,7 +305,7 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
         float* o0 = buffer.getWritePointer(0, at);
         float* o1 = buffer.getWritePointer(1, at);
         host_->process(ins, o0, o1, k);
-        const float mix = std::clamp(mix_->load() * 0.01f, 0.0f, 1.0f);
+        const float mix = mix_ ? std::clamp(mix_->load() * 0.01f, 0.0f, 1.0f) : 1.0f;
         if (mix < 1.0f || mixPrev_ < 1.0f) {
             const int lat = std::clamp(getLatencySamples(), 0, kDryRing - maxBlock_ - 1);
             for (int i = 0; i < k; i++) {

@@ -168,6 +168,7 @@ inline kit::PanelLayout dmx1580_layout() {
         E d;
         d.kind = E::Digit;
         d.x = dx[i], d.y = 10.0f, d.w = 11.6f, d.h = 19.0f, d.id = i, d.colour = 0xffff2a1a;
+        d.size = 2.25f;   // bold: ~13 % of the height (dim segments in the unlit photo; no lit photo)
         add(d);
     }
     text(349.2f, 5.6f, "\xe2\x88\xa7", 2.45f);   // the ^ / v arrows: their LEDs are not lit by this firmware
@@ -200,16 +201,18 @@ inline kit::PanelLayout dmx1580_layout() {
         E b;
         b.kind = E::Frame;
         b.style = 1;
-        b.colour = 0xff0c0c0c;
+        b.colour = 0xff1a1a1a;   // the rubber bezel: dark grey, round corners
+        b.size = 3.0f;
         b.x = 361.6f, b.y = 4.4f, b.w = 60.5f, b.h = 67.0f;
         add(b);
     }
-    const float kx[4] = {373.8f, 386.8f, 399.6f, 412.2f}, ky[4] = {18.9f, 31.7f, 44.3f, 57.3f};
+    // the AMS keypad (as the RMX16's), measured on retrogear-2943: a 12.8 mm pitch both ways, 8.5 x 6.6 mm caps
+    const float kx[4] = {374.1f, 386.9f, 399.7f, 412.5f}, ky[4] = {18.9f, 31.7f, 44.5f, 57.3f};
     const char* legend[4][4] = {{"1", "2", "3", "A"}, {"4", "5", "6", "B"}, {"7", "8", "9", "C"}, {"*", "0", "#", "D"}};
     const int code[4][4] = {{1, 2, 3, 0xA}, {4, 5, 6, 0xB}, {7, 8, 9, 0xC}, {0xF, 0, 0xD, 0xE}};
     const char* hot[4][4] = {{"1", "2", "3", "a"}, {"4", "5", "6", "b"}, {"7", "8", "9", "c"}, {"*.", "0", "#\r", "d"}};
     for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) key(kx[c], ky[r], 8.6f, 7.2f, code[r][c], legend[r][c], E::KeypadCream, hot[r][c]);
+        for (int c = 0; c < 4; c++) key(kx[c], ky[r], 8.5f, 6.6f, code[r][c], legend[r][c], E::KeypadCream, hot[r][c]);
 
     // power, reset (drawn; not emulated: the core has no cold restart while streaming)
     frame(428.4f, 1.7f, 449.4f, 43.0f);

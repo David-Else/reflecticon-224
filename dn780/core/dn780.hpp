@@ -1,7 +1,8 @@
 // Klark Teknik DN780: the emulator core as C++, with no global state (several instances per
 // process). Copied from the dn780 project's emu/core/dn780.hpp (SOURCE.md); there it is checked
-// bit for bit against the C reference (dn780_dsp.c, dn780_fw.c). Added here: the 8279 display
-// writes (Firmware::display()), which change no microcode or coefficient.
+// bit for bit against the C reference (dn780_dsp.c, dn780_fw.c). Added here: the 8279 (display
+// RAM, key FIFO and its interrupt, status) and the F001 inputs, which change no microcode or
+// coefficient of a load(); and the free-running unit (live_*) for the hardware panel.
 //
 //   dn780::Dsp       slot-level model of the DSP board (BRD 2638/4), driven by the 32-byte IC44
 //                    timing-PROM image (inferred, ../fx/ic44_hypothesis.bin)
@@ -186,6 +187,80 @@ public:
     const uint8_t* display() const { return display_; }
     const std::vector<uint8_t>& rom() const { return rom_; }
 
+    // ---- the free-running unit (the hardware panel) ----
+    // A second copy of the machine that runs on: the 8279 raises the Z80's interrupt while its key
+    // FIFO holds a code (IM 1), as on the unit, so the firmware's own key handling, editing,
+    // memories and displays all work. It is (re)started from the state the last load() left, in
+    // the idle loop, keeping the battery RAM's sequence and user memories (kUserRam).
+    static constexpr uint16_t kUserRam = 0x050, kUserRamEnd = 0x2B8;   // E050 sequence, E060-E2B7 memories 40-89
+    static constexpr long kClock = 3750000;   // Z80 clock: 15 MHz / 4 (assumed; only timing depends on it)
+    void live_start() {
+        if (!booted_ok_) return;
+        uint8_t keep[kUserRamEnd - kUserRam];
+        std::memcpy(keep, (live_ok_ ? L_ : booted_).ram + kUserRam, sizeof keep);
+        L_ = M_;
+        L_.cpu = booted_.cpu;
+        L_.pins = booted_.pins;
+        std::memcpy(L_.ram + kUserRam, keep, sizeof keep);
+        L_.fifo_n = 0;
+        L_.f001 = live_f001_;
+        live_ok_ = true;
+        live_since_write_ = 0;
+        live_dirty_ = false;
+    }
+    bool live() const { return live_ok_; }
+    // A key code into the 8279's FIFO (as its scan would put it). false if the FIFO was full.
+    bool live_key(uint8_t code) {
+        if (!live_ok_ || L_.fifo_n >= 8) return false;
+        L_.fifo[L_.fifo_n++] = code;
+        return true;
+    }
+    // F001 (active low): bit 0 DOWN, bit 1 UP, bit 2 the REV mute key, held.
+    void live_inputs(uint8_t f001) { live_f001_ = L_.f001 = f001; }
+    // Run the unit for `cycles` Z80 clocks. True when the microcode or coefficients changed and
+    // have then been left alone for ~5 ms (a finished load or edit): take them with live_program().
+    bool live_run(long cycles) {
+        if (!live_ok_) return false;
+        for (long i = 0; i < cycles; i++) {
+            if (L_.fifo_n) L_.pins |= Z80_INT;   // the 8279's IRQ: level, while the FIFO is not empty
+            else L_.pins &= ~Z80_INT;
+            L_.pins = z80_tick(&L_.cpu, L_.pins);
+            if (L_.pins & Z80_MREQ) {
+                uint16_t a = Z80_GET_ADDR(L_.pins);
+                if (L_.pins & Z80_RD) { Z80_SET_DATA(L_.pins, rd(L_, a)); }
+                else if (L_.pins & Z80_WR) {
+                    if ((a >> 12) == 0xC || (a >> 12) == 0xD) live_dirty_ = true, live_since_write_ = 0;
+                    wr(L_, a, Z80_GET_DATA(L_.pins));
+                }
+            } else if ((L_.pins & Z80_IORQ) && (L_.pins & Z80_RD)) {
+                Z80_SET_DATA(L_.pins, 0xFF);
+            }
+        }
+        live_since_write_ += cycles;
+        if (live_dirty_ && live_since_write_ >= kClock / 200) {
+            live_dirty_ = false;
+            return true;
+        }
+        return false;
+    }
+    void live_program(uint8_t ucode[256], uint8_t coef[256]) const {
+        std::memcpy(ucode, L_.c000, 256);
+        std::memcpy(coef, L_.d000, 256);
+    }
+    const uint8_t* live_display() const { return L_.disp; }
+    uint8_t live_ram(uint16_t a) const { return L_.ram[a & 0x7FF]; }
+    bool live_idle() const { return L_.cpu.pc >= 0x0092 && L_.cpu.pc <= 0x0098; }
+    // The battery RAM worth keeping across sessions (sequence and user memories).
+    std::vector<uint8_t> user_ram() const {
+        const Machine& m = live_ok_ ? L_ : booted_;
+        return std::vector<uint8_t>(m.ram + kUserRam, m.ram + kUserRamEnd);
+    }
+    void set_user_ram(const uint8_t* b, size_t n) {
+        if (n != size_t(kUserRamEnd - kUserRam) || !booted_ok_) return;
+        std::memcpy(booted_.ram + kUserRam, b, n);
+        if (live_ok_) std::memcpy(L_.ram + kUserRam, b, n);
+    }
+
     // The 12 parameter bytes (E030-E03B) of factory preset 1-39, or nullptr for an empty slot.
     const uint8_t* preset_bytes(int preset) const {
         if (preset < 1 || preset > 39) return nullptr;
@@ -228,40 +303,64 @@ private:
         uint8_t disp[16] = {};          // the 8279's display RAM (writes only; see wr())
         uint8_t disp_addr = 0;
         bool disp_autoinc = false;
+        bool read_disp = false;         // the 8279's read mode: display RAM (else the FIFO)
+        uint8_t fifo[8] = {}, fifo_n = 0;
+        uint8_t f001 = 0xFF;            // the input port (UP/DOWN/REV mute, active low)
         z80_t cpu{};
         uint64_t pins = 0;
     };
 
-    uint8_t rd(uint16_t a) const {
+    uint8_t rd(uint16_t a) { return rd(M_, a); }
+    void wr(uint16_t a, uint8_t v) { wr(M_, a, v); }
+    uint8_t rd(Machine& m, uint16_t a) const {
         if (a < 0x8000) return a < rom_.size() ? rom_[a] : 0xFF;
         switch (a >> 12) {
-        case 0xA: return (a & 1) ? 0x00 : 0xFF;
-        case 0xB: return M_.b[a & 15];
-        case 0xC: return M_.c000[a & 0xFFF];
-        case 0xD: return M_.d000[a & 0xFFF];
-        case 0xE: return M_.ram[a & 0x7FF];
-        case 0xF: return a >= kSentinel ? 0x76 : ((a & 1) ? 0xFF : M_.f000);
+        case 0xA:   // 8279: A001 status (FIFO count; display never busy), A000 data
+            if (a & 1) return uint8_t(m.fifo_n | (m.fifo_n >= 8 ? 0x08 : 0));
+            if (m.read_disp) {
+                uint8_t v = m.disp[m.disp_addr & 15];
+                if (m.disp_autoinc) m.disp_addr = (m.disp_addr + 1) & 15;
+                return v;
+            }
+            if (!m.fifo_n) return 0xFF;
+            {
+                uint8_t v = m.fifo[0];
+                std::memmove(m.fifo, m.fifo + 1, 7);
+                m.fifo_n--;
+                return v;
+            }
+        case 0xB: return m.b[a & 15];
+        case 0xC: return m.c000[a & 0xFFF];
+        case 0xD: return m.d000[a & 0xFFF];
+        case 0xE: return m.ram[a & 0x7FF];
+        case 0xF: return a >= kSentinel ? 0x76 : ((a & 1) ? m.f001 : m.f000);
         }
         return 0xFF;
     }
-    void wr(uint16_t a, uint8_t v) {
+    void wr(Machine& m, uint16_t a, uint8_t v) {
         if (a < 0x8000) return;
         switch (a >> 12) {
-        case 0xA:   // 8279: A001 command, A000 data. Only display writes are modelled; reads stay
-                    // as before (A001 0, A000 FF) so the microcode and coefficients are unchanged.
+        case 0xA:   // 8279: A001 command, A000 data (display RAM writes)
             if (a & 1) {
-                if ((v & 0xE0) == 0x80) { M_.disp_addr = v & 15; M_.disp_autoinc = (v >> 4) & 1; }   // write display RAM
-                else if ((v & 0xE0) == 0xC0 && (v & 0x10)) std::memset(M_.disp, 0, 16);             // clear
+                switch (v & 0xE0) {
+                case 0x40: m.read_disp = false; break;                                                  // read FIFO
+                case 0x60: m.read_disp = true, m.disp_addr = v & 15, m.disp_autoinc = (v >> 4) & 1; break; // read display RAM
+                case 0x80: m.read_disp = false, m.disp_addr = v & 15, m.disp_autoinc = (v >> 4) & 1; break; // write display RAM
+                case 0xC0:   // clear: display (CD bit 4), FIFO (CF bit 1, or CA bit 0 for both)
+                    if (v & 0x10) std::memset(m.disp, 0, 16);
+                    if (v & 0x03) m.fifo_n = 0;
+                    break;
+                }
             } else {
-                M_.disp[M_.disp_addr & 15] = v;
-                if (M_.disp_autoinc) M_.disp_addr = (M_.disp_addr + 1) & 15;
+                m.disp[m.disp_addr & 15] = v;
+                if (m.disp_autoinc) m.disp_addr = (m.disp_addr + 1) & 15;
             }
             break;
-        case 0xB: M_.b[a & 15] = v; break;
-        case 0xC: M_.c000[a & 0xFFF] = v; break;
-        case 0xD: M_.d000[a & 0xFFF] = v; break;
-        case 0xE: M_.ram[a & 0x7FF] = v; break;
-        case 0xF: if (!(a & 1)) M_.f000 = v; break;
+        case 0xB: m.b[a & 15] = v; break;
+        case 0xC: m.c000[a & 0xFFF] = v; break;
+        case 0xD: m.d000[a & 0xFFF] = v; break;
+        case 0xE: m.ram[a & 0x7FF] = v; break;
+        case 0xF: if (!(a & 1)) m.f000 = v; break;
         }
     }
     bool run(long cycles, bool stop_at_halt) {
@@ -290,8 +389,10 @@ private:
 
     std::vector<uint8_t> rom_;
     int version_ = 15;
-    Machine M_, booted_;
-    bool booted_ok_ = false;
+    Machine M_, booted_, L_;
+    bool booted_ok_ = false, live_ok_ = false, live_dirty_ = false;
+    long live_since_write_ = 0;
+    uint8_t live_f001_ = 0xFF;
     uint8_t display_[16] = {};
 };
 

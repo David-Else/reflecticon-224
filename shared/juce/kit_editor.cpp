@@ -3,7 +3,7 @@
 namespace kit {
 
 namespace {
-const juce::Colour kBg{0xff1d1f22}, kPanel{0xff0b0b0b}, kLed{0xffff3b2f}, kText{0xffe6e6e6}, kDim{0xff7a7d82},
+const juce::Colour kBg{0xff1d1f22}, kText{0xffe6e6e6}, kDim{0xff7a7d82},
     kAccent{0xffd9a441};
 constexpr int kW = 560, kRowH = 30, kPad = 16, kNameW = 150, kReadW = 130;
 // grouped controls: boxes kBoxW wide, kGap apart; the shared controls in columns as wide below
@@ -26,11 +26,6 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
     title_.setColour(juce::Label::textColourId, kText);
     addAndMakeVisible(title_);
 
-    panel_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 22.0f, juce::Font::bold));
-    panel_.setColour(juce::Label::textColourId, kLed);
-    panel_.setColour(juce::Label::backgroundColourId, kPanel);
-    panel_.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(panel_);
 
     for (auto& g : info.groups) groups_.push_back(juce::String(g));
     for (auto& prm : info.params) {
@@ -39,6 +34,7 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
             const juce::String g(prm.group);
             auto at = std::find(groups_.begin(), groups_.end(), g);
             r->group = int(at - groups_.begin());
+            r->pos = prm.group_pos;
             if (at == groups_.end()) groups_.push_back(g);
         }
         r->name.setText(r->group >= 0 && !prm.short_name.empty() ? prm.short_name : prm.name, juce::dontSendNotification);
@@ -97,7 +93,7 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
         if (auto* tc = dynamic_cast<juce::SettableTooltipClient*>(r->control())) tc->setTooltip(prm.help);
         rows_.push_back(std::move(r));
     }
-    {   // the kit's wet/dry, after the machine's own controls
+    if (!info.own_mix) {   // the kit's wet/dry, after the machine's own controls
         auto r = std::make_unique<Row>();
         r->name.setText("Mix", juce::dontSendNotification);
         r->name.setColour(juce::Label::textColourId, kText);
@@ -109,6 +105,7 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
         if (!info.mix_group.empty()) {
             auto at = std::find(groups_.begin(), groups_.end(), juce::String(info.mix_group));
             r->group = int(at - groups_.begin());
+            r->pos = 1 << 20;   // last in its box
             if (at == groups_.end()) groups_.push_back(juce::String(info.mix_group));
         }
         const char* help = "Dry signal against the effect, after the machine: 100 % is the effect alone, as the hardware gives it.";
@@ -120,12 +117,16 @@ Editor::Editor(Processor& p) : AudioProcessorEditor(p), proc_(p) {
         rows_.push_back(std::move(r));
     }
 
-    presets_.setTextWhenNothingSelected("Factory presets");
+    presets_.setTextWhenNothingSelected("Presets");
     presets_.setTextWhenNoChoicesAvailable("(load the ROMs first)");
     presets_.onChange = [this] {
-        int i = presets_.getSelectedId() - 1;
-        if (i >= 0 && i < int(presetList_.size())) proc_.applyPreset(presetList_[size_t(i)]);
+        const int id = presets_.getSelectedId();
         presets_.setSelectedId(0, juce::dontSendNotification);
+        if (id == kChooseRomsItem) {
+            chooseRoms();
+            return;
+        }
+        if (id >= 1 && id <= int(presetList_.size())) proc_.applyPreset(presetList_[size_t(id - 1)]);
     };
     addAndMakeVisible(presets_);
     romsButton_.onClick = [this] { chooseRoms(); };
@@ -156,11 +157,11 @@ void Editor::setMode(bool hardware) {
         panelView_->setVisible(hardware);
         if (!hardware) panelView_->releaseAll();
     }
-    panel_.setVisible(!hardware);
     for (auto& r : rows_) {
-        r->name.setVisible(!hardware);
-        r->readout.setVisible(!hardware);
-        r->control()->setVisible(!hardware);
+        const bool show = !hardware || r.get() == mixRow();   // the kit's Mix is not on any panel: it stays
+        r->name.setVisible(show);
+        r->readout.setVisible(show);
+        r->control()->setVisible(show);
         if (r->sync) r->sync->setVisible(!hardware);
     }
     layoutSize();
@@ -177,7 +178,7 @@ void Editor::layoutSize() {
     } else {
         const int g = int(groups_.size());
         nativeW_ = g ? 2 * kPad + columns() * kBoxW + (columns() - 1) * kGap : kW;
-        nativeH_ = kPad + 30 + 8 + 52 + 12 + easyHeight() + 12 + 28 + 8 + 20 + kPad;
+        nativeH_ = kPad + 30 + 12 + easyHeight() + 12 + 28 + 8 + 20 + kPad;
     }
     const float scale = std::clamp(proc_.editorScale, 0.5f, 3.0f);
     setResizeLimits(nativeW_ / 2, nativeH_ / 2, nativeW_ * 3, nativeH_ * 3);
@@ -250,15 +251,21 @@ void Editor::layoutNative() {
         panelView_->setBounds(b.removeFromTop(int(std::lround(L.height * kPanelPxPerMm))).withWidth(int(std::lround(L.width * kPanelPxPerMm))));
         b.removeFromTop(12);
         auto bar = b.removeFromTop(28);
-        romsButton_.setBounds(bar.removeFromRight(140));
-        bar.removeFromRight(8);
+        if (romsShown_) {
+            romsButton_.setBounds(bar.removeFromRight(140));
+            bar.removeFromRight(8);
+        }
         presets_.setBounds(bar.removeFromRight(320));
+        if (auto* m = mixRow()) {   // the kit's wet/dry, under the panel's left end
+            m->name.setBounds(bar.removeFromLeft(48));
+            m->control()->setBounds(bar.removeFromLeft(280));
+            bar.removeFromLeft(10);
+            m->readout.setBounds(bar.removeFromLeft(96));
+        }
         b.removeFromTop(8);
         status_.setBounds(b.removeFromTop(20));
         return;
     }
-    b.removeFromTop(8);
-    panel_.setBounds(b.removeFromTop(52));
     b.removeFromTop(12);
     auto place = [](Row& r, juce::Rectangle<int> row, int nameW) {
         r.name.setBounds(row.removeFromLeft(nameW));
@@ -291,8 +298,11 @@ void Editor::layoutNative() {
                 boxes_.push_back(box);
                 auto in = box.reduced(kBoxInset, 0);
                 in.removeFromTop(kBoxHead);
+                std::vector<Row*> members;
                 for (auto& r : rows_)
-                    if (r->group == int(j)) place(*r, in.removeFromTop(kRowH), kBoxNameW);
+                    if (r->group == int(j)) members.push_back(r.get());
+                std::stable_sort(members.begin(), members.end(), [](Row* a, Row* b) { return a->pos < b->pos; });
+                for (auto* r : members) place(*r, in.removeFromTop(kRowH), kBoxNameW);
             }
         }
         if (!shared.empty()) {
@@ -308,8 +318,10 @@ void Editor::layoutNative() {
     }
     b.removeFromTop(12);
     auto bar = b.removeFromTop(28);
-    romsButton_.setBounds(bar.removeFromRight(140));
-    bar.removeFromRight(8);
+    if (romsShown_) {
+        romsButton_.setBounds(bar.removeFromRight(140));
+        bar.removeFromRight(8);
+    }
     presets_.setBounds(bar);
     b.removeFromTop(8);
     status_.setBounds(b.removeFromTop(20));
@@ -319,8 +331,6 @@ void Editor::timerCallback() {
     if (panelView_ && panelView_->isVisible()) panelView_->refresh();
     auto r = proc_.host().readouts();
     const auto& info = proc_.info();
-    hasPanel_ = !r.panel.empty();
-    panel_.setText(hasPanel_ ? juce::String(r.panel) : juce::String("- - -"), juce::dontSendNotification);
     bool have = proc_.host().has_machine();
     for (size_t i = 0; i < rows_.size(); i++) {
         auto& row = *rows_[i];
@@ -335,6 +345,8 @@ void Editor::timerCallback() {
         }
         const int sc = row.sync ? proc_.syncChoice(i) : 0;
         if (sc > 0 && used) text = Processor::syncChoices()[sc] + juce::String(juce::CharPointer_UTF8(" \xc2\xb7 ")) + text;
+        // a dropdown's readout that only says what the dropdown says ("Room 3", "1 AMBIENCE") is left blank
+        if (used && row.combo && row.combo->getText().isNotEmpty() && text.endsWith(row.combo->getText())) text = {};
         row.readout.setText(used ? text : juce::String(juce::CharPointer_UTF8("\xe2\x80\x94")), juce::dontSendNotification);
         row.name.setAlpha(used ? 1.0f : 0.4f);
         row.control()->setAlpha(used && sc == 0 ? 1.0f : 0.4f);   // the tempo sets it
@@ -345,14 +357,26 @@ void Editor::timerCallback() {
     if (!r.status.empty()) st += (st.isEmpty() ? "" : "  |  ") + juce::String(r.status);
     status_.setText(st, juce::dontSendNotification);
     romsButton_.setTooltip(proc_.statusOk() ? "In use: " + proc_.status() : juce::String("Choose the ROM files or their folder, or drop them on the window"));
-    if (have && presetList_.empty()) refreshPresets();
-    presets_.setVisible(!have || !presetList_.empty());   // machines without factory presets: no menu
+    if (have && presets_.getNumItems() == 0) refreshPresets();
+    // Once a full ROM set runs, the button goes: choosing other ROMs is the presets menu's last item
+    // (or a drop on the window).
+    if (romsShown_ != !proc_.statusOk()) {
+        romsShown_ = !proc_.statusOk();
+        romsButton_.setVisible(romsShown_);
+        resized();
+    }
+}
+
+Editor::Row* Editor::mixRow() const {
+    return !proc_.info().own_mix && rows_.size() > proc_.info().params.size() ? rows_.back().get() : nullptr;
 }
 
 void Editor::refreshPresets() {
     presetList_ = proc_.host().presets();
     presets_.clear(juce::dontSendNotification);
     for (size_t i = 0; i < presetList_.size(); i++) presets_.addItem(presetList_[i].name, int(i) + 1);
+    if (!presetList_.empty()) presets_.addSeparator();
+    presets_.addItem("Choose other ROMs...", kChooseRomsItem);
 }
 
 void Editor::chooseRoms() {
@@ -366,6 +390,7 @@ void Editor::chooseRoms() {
                               if (!paths.isEmpty()) {
                                   proc_.loadRoms(paths);
                                   presetList_.clear();
+                                  presets_.clear(juce::dontSendNotification);
                               }
                           });
 }
@@ -373,6 +398,7 @@ void Editor::chooseRoms() {
 void Editor::filesDropped(const juce::StringArray& files, int, int) {
     proc_.loadRoms(files);
     presetList_.clear();
+    presets_.clear(juce::dontSendNotification);
 }
 
 }  // namespace kit

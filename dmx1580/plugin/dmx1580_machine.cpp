@@ -100,7 +100,7 @@ public:
         }
         o.param[PhaseA] = v_[PhaseA] > 0.5f ? "A out of phase" : "in phase";
         o.param[MonoIn] = v_[MonoIn] > 0.5f ? "A feeds both" : "stereo";
-        o.param[MixOut] = v_[MixOut] > 0.5f ? "(A + B) / 2" : "separate";
+        o.param[MixOut] = v_[MixOut] > 0.5f ? "summed (A + B) / 2" : "separate";
         o.param[LockIn] = v_[LockIn] > 0.5f ? "locked" : "off";
         o.param[Trigger] = v_[Trigger] > 0.5f ? "held" : "off";
         int ri = std::clamp(int(std::lround(v_[Ram])), 0, 3);
@@ -149,6 +149,48 @@ public:
             o.adopt_serial = s.adopt_serial;
         }
         return o;
+    }
+
+    // The unit had nine user stores and no factory programs. These are ours: set-ups from the user
+    // manual's section 2.5 (marked "manual") and a few more. They set the panel and keypad (the first
+    // 19 parameters, through Trigger) and the kit's wet/dry, never the unit options (RAM, boards,
+    // analog stages, smooth pitch). F/B gain is pot rotation: the loop gain is ~0.64 at 70 %, ~0.95 at
+    // 80 % (fb_gain_law), so the repeats run away a little past 80. The manual's VCO ADT is 18 ms with
+    // depth on '9' and speed '2'-'3': depth 9/10 taken as 18 %, and the knob's speed scale is unknown,
+    // so 0.6 Hz, which swings the pitch ~1.2 % (18 ms x 18 % x 2 pi f), near its 1.015 pitch-change ADT.
+    std::vector<kit::Preset> presets() const override {
+        struct Row {
+            const char* name;
+            float dA, dB, pA, pB, inA, inB, fbA, fbB, flA, flB, out, vco, speed, depth, phA, mono, mix_out, mix;
+        };
+        static const Row rows[] = {
+            //                               dA    dB    pA     pB     inA inB  fbA fbB flA flB out vco spd   dep phA mono mixo  wet
+            {"Echo 84 ms (manual)",          84,   168,  1.0f,  1.0f,  0, -30, 60, 0,  30, 0,  6,  0, 1.0f, 0,  0,  1,   1,   35},
+            {"ADT 18 ms, VCO (manual)",      18,   0,    1.0f,  1.0f,  0, -30, 0,  0,  0,  0,  6,  1, 0.6f, 18, 0,  1,   1,   50},
+            {"Pitch ADT 1.015 (manual)",     30,   0,    1.015f,1.0f,  0, -30, 0,  0,  0,  0,  6,  0, 1.0f, 0,  0,  1,   1,   50},
+            {"Flanging near zero (manual)",  0,    2,    1.0f,  1.0f,  0, 0,   0,  60, 0,  0,  6,  1, 0.15f,20, 0,  1,   1,   100},
+            {"Wide double",                  23,   31,   1.008f,0.992f,0, 0,   0,  0,  0,  0,  0,  0, 1.0f, 0,  0,  1,   0,   50},
+            {"Chorus",                       15,   21,   1.0f,  1.0f,  0, 0,   0,  0,  0,  0,  0,  1, 0.7f, 6,  0,  1,   0,   50},
+            {"Vibrato",                      8,    0,    1.0f,  1.0f,  0, -30, 0,  0,  0,  0,  6,  1, 5.0f, 6,  0,  1,   1,   100},
+            {"Slapback 110 ms",              110,  0,    1.0f,  1.0f,  0, -30, 0,  0,  0,  0,  6,  0, 1.0f, 0,  0,  1,   1,   30},
+            {"Stereo echo 375 / 500 ms",     375,  500,  1.0f,  1.0f,  0, 0,   55, 55, 40, 40, 0,  0, 1.0f, 0,  0,  1,   0,   30},
+            {"Dark repeats",                 450,  300,  1.0f,  1.0f,  0, 0,   75, 72, 60, 60, 0,  0, 1.0f, 0,  0,  1,   0,   30},
+            {"Rising echo (semitone)",       250,  375,  1.059f,1.0f,  0, 0,   70, 40, 20, 40, 0,  0, 1.0f, 0,  0,  1,   0,   30},
+            {"Octave-up feedback",           60,   90,   2.0f,  1.0f,  0, 0,   60, 0,  30, 0,  0,  0, 1.0f, 0,  0,  1,   0,   35},
+            {"Octave down",                  30,   0,    0.5f,  1.0f,  0, -30, 0,  0,  0,  0,  6,  0, 1.0f, 0,  0,  1,   1,   50},
+            {"Fifth above",                  30,   0,    1.498f,1.0f,  0, -30, 0,  0,  0,  0,  6,  0, 1.0f, 0,  0,  1,   1,   40},
+            {"Fourth and fifth",             30,   45,   1.335f,1.498f,0, 0,   0,  0,  0,  0,  0,  0, 1.0f, 0,  0,  1,   1,   40},
+        };
+        std::vector<kit::Preset> out;
+        for (const Row& r : rows) {
+            kit::Preset p;
+            p.name = r.name;
+            p.values = {r.dA, r.dB, r.pA, r.pB, r.inA, r.inB, r.fbA, r.fbB, r.flA, r.flB, r.out,
+                        r.vco, r.speed, r.depth, r.phA, r.mono, r.mix_out, 0.0f, 0.0f};
+            p.mix = r.mix;
+            out.push_back(std::move(p));
+        }
+        return out;
     }
 
     void process(const float* const* in, float* out_l, float* out_r, int n) override {
@@ -247,12 +289,12 @@ kit::Info make_info() {
         {"vcoDepth", "VCO Depth", K::Float, 0, 20, 0, {}, "%"},
         {"phaseA", "Phase A Out", K::Bool, 0, 1, 0, {}, ""},
         {"monoIn", "Mono Input", K::Bool, 0, 1, 0, {}, ""},
-        {"mixOut", "Mix Outputs", K::Bool, 0, 1, 0, {}, ""},
+        {"mixOut", "Sum Outputs", K::Bool, 0, 1, 0, {}, ""},
         {"lockin", "Lock In", K::Bool, 0, 1, 0, {}, ""},
         {"trigger", "Trigger", K::Bool, 0, 1, 0, {}, ""},
         {"ram", "RAM per channel", K::Choice, 0, 3, 3, {"4K words", "16K words", "32K words", "64K words"}, ""},
         {"boards", "Pitch boards", K::Choice, 0, 1, 1, {"one", "two"}, ""},
-        {"analog", "Analog stages", K::Bool, 0, 1, 0, {}, ""},
+        {"analog", "Analog stages", K::Bool, 0, 1, 1, {}, ""},   // on: the tone is in these (2026-11-24)
         {"smooth", "Smooth pitch (later units)", K::Bool, 0, 1, 0, {}, ""},
     };
     kit::tempo_sync(i.params, {"delayA", "delayB", "vcoSpeed"});
@@ -262,7 +304,7 @@ kit::Info make_info() {
                                        {"fbGainB", "F/B Gain"}, {"fbFilterB", "F/B Filter"}});
     kit::group(i.params, "VCO", {{"vco", "XTAL/VCO"}, {"vcoSpeed", "Speed"}, {"vcoDepth", "Depth"}});
     kit::group(i.params, "Lock-in", {{"lockin", "Lock In"}, {"trigger", "Trigger"}});
-    kit::group(i.params, "In / Out", {{"out", "Output"}, {"monoIn", "Mono input"}, {"mixOut", "Mix outputs"}});
+    kit::group(i.params, "In / Out", {{"out", "Output"}, {"monoIn", "Mono input"}, {"mixOut", "Sum outputs"}});
     kit::group(i.params, "Unit", {{"ram", "RAM"}, {"boards", "Pitch boards"}, {"analog", "Analog"}, {"smooth", "Smooth pitch"}});
     i.groups = {"Channel A", "Channel B", "VCO", "Lock-in", "In / Out", "Unit"};
     i.mix_group = "In / Out";
@@ -310,7 +352,7 @@ kit::Info make_info() {
         {"boards",
          "One or two pitch-change boards fitted. With one, channel B has no pitch change."},
         {"analog",
-         "Models the input filters, the DAC's track-and-hold and the output filters from the schematics. Off: the digital path alone."},
+         "Models the input filters, the DAC's track-and-hold and the output filters from the schematics (on by default). Off: the digital path alone."},
         {"smooth",
          "Interpolates the pitch changer's reads: smoother pitch shifts, a guess at what later units did."},
     });

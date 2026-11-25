@@ -6,6 +6,10 @@
 // first clamped to the firmware's own per-program limits (its table at 1CA0), so the loader is never
 // handed a value the panel could not set. Parameters a program does not use read "".
 //
+// The hardware panel (dn780_panel.hpp) runs a second, free-running copy of the firmware: its keys
+// interrupt the Z80 through the 8279 as on the unit, and what the firmware loads is posted to the
+// engine; the settings it ends up with come back as parameter values (PanelState::adopt).
+//
 // v2.2 only for now: v1.5 has another program list and parameter map (notes/2026-11-09-2230).
 // Sound-on-Sound and Infinite are left out (their Level-key hold input is not modelled).
 #pragma once

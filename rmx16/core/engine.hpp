@@ -30,8 +30,20 @@
 // The battery RAM (stores and the last settings) is copied out every half second for the session
 // (battery()), and boot() can restore it.
 //
-// The input goes to the DSP as a 16-bit sample (the real gain-ranging 12-bit ADC is not modelled);
-// the outputs are DAC A / DAC B through a ~5 Hz DC blocker, standing in for the analog stage.
+// The input reaches the DSP through the unit's gain-ranging converter (adc_bus(), on by default;
+// set_converter(false) gives a plain 16-bit sample); the outputs are DAC A / DAC B through a ~5 Hz
+// DC blocker, standing in for the analog stage.
+//
+// The converter: the RMX16 uses the DMX family's stereo sampler and ADC3 cards (service manual
+// pp. 11-14: DMX 15.3 and DMX 14.7), as the DMX 15-80 core models them (dmx::AudioCore::adc(), from
+// the gate-level converter testbench): window comparators at 8/4/2 Vt (Vt = 0.484 V) choose the
+// sampler gain 2^r (r = 0 above 3.87 V ... 3 below 0.97 V) and the ADC rounds x * 2^r to a 12-bit
+// offset-binary code, LSB 20 V / 4096. The RMX16's exponent card (DMX 44.3, transcribed in the
+// RMX16 project: OUT15 = D11, OUTk = D(k-1-s), s = 2 /R1 + /R0 = 3 - r) shifts it back onto the
+// 16-bit linear bus: (m - 2048) * 2^(4 - r), so +-10 V = +-32768 in every range and only the step
+// changes: 16 units (12 bits) above -8.2 dBFS, 8 / 4 below -14.3 / -20.3 dBFS, 2 (15 bits) below
+// that. The plugin's +-1.0 is taken as +-10 V, the converter's full scale (an assumption). Not
+// modelled: the input board's filters and the sampler's settling, droop and comparator offsets.
 #pragma once
 #include "rmx16_core.h"
 #include "../../shared/core/mailbox.hpp"
@@ -132,6 +144,22 @@ public:
 
     void set_target(const Target& t) { mailbox_.post(t); }
     void set_swap(bool on) { swap_.store(on, std::memory_order_relaxed); }
+    void set_converter(bool on) { converter_.store(on, std::memory_order_relaxed); }
+    // the INPUT and OUTPUT level controls as gains (the analog stages before the converter and
+    // after the DACs; their law on the unit is not known, the plugin sets them in dB)
+    void set_gains(float in, float out) {
+        in_gain_.store(in, std::memory_order_relaxed);
+        out_gain_.store(out, std::memory_order_relaxed);
+    }
+    // the sampler + ADC3 + exponent card for x in +-1.0 (= +-10 V): the 16-bit bus word
+    static int16_t adc_bus(double x) {
+        const double v = x * 10.0, vt = 15.0 * 100.0 / 3100.0;
+        const double a = std::fabs(v);
+        const int r = a > 8 * vt ? 0 : a > 4 * vt ? 1 : a > 2 * vt ? 2 : 3;
+        const double ain = std::clamp(v * double(1 << r), -10.0, 9.999);
+        const int c = std::clamp(int(std::floor(ain / (20.0 / 4096.0) + 2048.5)), 0, 4095);
+        return int16_t((c - 2048) * (1 << (4 - r)));
+    }
 
     // Not concurrent with process(): types the newest target on this thread (silent input, output
     // dropped) until the driver is idle, at most `max_seconds` of machine time.
@@ -186,14 +214,18 @@ public:
         const float* ins[1] = {in};
         bridge_.process(ins, out_l, out_r, n, [this](const float* const* x, float* l, float* r, int count) {
             const bool sw = swap_.load(std::memory_order_relaxed);
+            const bool conv = converter_.load(std::memory_order_relaxed);
+            const double gi = in_gain_.load(std::memory_order_relaxed);
+            const float go = out_gain_.load(std::memory_order_relaxed);
             for (int i = 0; i < count; i++) {
-                double v = double(x[0][i]) * 32767.0;
-                int16_t s = int16_t(v >= 32767.0 ? 32767 : v <= -32768.0 ? -32768 : std::lrint(v));
+                const double xi = double(x[0][i]) * gi;
+                double v = xi * 32767.0;
+                int16_t s = conv ? adc_bus(xi) : int16_t(v >= 32767.0 ? 32767 : v <= -32768.0 ? -32768 : std::lrint(v));
                 if (!step(s)) {
                     l[i] = r[i] = 0.0f;
                     continue;
                 }
-                float a = float(dc_[0]) / 32768.0f, b = float(dc_[1]) / 32768.0f;
+                float a = go * float(dc_[0]) / 32768.0f, b = go * float(dc_[1]) / 32768.0f;
                 l[i] = sw ? b : a;
                 r[i] = sw ? a : b;
             }
@@ -510,6 +542,8 @@ private:
     uint64_t phase_t_ = 0;
 
     std::atomic<bool> swap_{false};
+    std::atomic<bool> converter_{true};
+    std::atomic<float> in_gain_{1.0f}, out_gain_{1.0f};
     kit::PanelKeyQueue<64> keyq_;
     std::atomic<bool> power_{true};
     bool powered_ = true;

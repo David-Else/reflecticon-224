@@ -11,10 +11,10 @@ The 224's web demo: https://joelanders.github.io/reflecticon/
 | Folder | Machine | State |
 |---|---|---|
 | [`224/`](224/) | Lexicon 224, 224X, 224XL | plugin and web demo released (alpha); gate- and board-level models |
-| [`rmx16/`](rmx16/) | AMS RMX16 (v3.2) | plugin and web build; hardware panel |
-| [`dmx1580/`](dmx1580/) | AMS DMX 15-80S | plugin and web build; hardware panel |
-| [`dn780/`](dn780/) | Klark Teknik DN780 (v2.2) | plugin and web build |
-| [`sg323/`](sg323/) | Ursa Major StarGate 323 | plugin and web build |
+| [`rmx16/`](rmx16/) | AMS RMX16 (v3.2) | plugin released (alpha), web build; hardware panel |
+| [`dmx1580/`](dmx1580/) | AMS DMX 15-80S | plugin released (alpha), web build; hardware panel |
+| [`dn780/`](dn780/) | Klark Teknik DN780 (v2.2) | plugin released (alpha), web build; hardware panel |
+| [`sg323/`](sg323/) | Ursa Major StarGate 323 | plugin released (alpha), web build; hardware panel |
 
 Makers and model names are named only to say what is emulated. This project is not affiliated with
 or endorsed by any of them or their owners.

@@ -25,17 +25,20 @@ namespace kit {
 
 struct PanelElement {
     enum Kind {
-        Frame,    // a printed outline (rounded rectangle), `text` = caption on its top edge
-        Window,   // a display window (dark filter glass)
+        Frame,    // a printed outline (rounded rectangle), `text` = caption in a gap in its top edge
+        Window,   // a display window (filter glass): `colour` = its tint (0 = dark red), `style` 1 = round ends
         Text,     // a printed legend: `text`, `size` = cap height (mm, 0 = 2.1), `style` = Justify
-        Key,      // a momentary key: `id` = key id for Machine::panel_key, `text` = legend on the cap,
+        Key,      // a momentary key: `id` = key id for Machine::panel_key, `text` = legend on the cap
+                  // (`colour` = its colour, 0 = dark ink),
                   // `style` = KeyStyle, `hotkey` = computer keys that press it
         Led,      // an indicator: `id` = index into PanelState::leds, `colour` = its lit colour.
                   // An LED the emulation does not drive has id -1 and is drawn dark.
-        Digit,    // a 7-segment digit: `id` = index into PanelState::digits, `style` = DigitStyle
+        Digit,    // a 7-segment digit: `id` = index into PanelState::digits, `style` = DigitStyle,
+                  // `size` = segment width in units of a 12 x 18 cell (0 = 1.55)
         Alpha,    // alphanumeric characters: `id` = first index into PanelState::alpha, `count` chars
-        Pot,      // a knob: `param` (host parameter) or `id` (PanelInput), `text` = dial numerals, `size` =
-                  // their cap height (0 = 2.2 mm)
+        Pot,      // a knob: `param` (host parameter) or `id` (PanelInput), `text` = dial numerals, or
+                  // "low|high" for a label at each end, `size` = their cap height (0 = 2.2 mm), `style` =
+                  // DialStyle, `colour` = a coloured cap on a black knurled skirt (0 = the chrome knob)
         Switch,   // a toggle: `param` (a Bool host parameter) or `id` (PanelInput, 0/1); `text` =
                   // "upper|lower" position legends are separate Text elements, `style` 1 = up is on
         Hole,     // a rack-ear slot or a screw head (`style` 0 slot, 1 screw)
@@ -45,6 +48,8 @@ struct PanelElement {
     enum Justify { Centre = 0, Left = 1, Right = 2 };
     enum KeyStyle { DarkSquare = 0, KeypadCream = 1, LightSquare = 2 };
     enum DigitStyle { Seven = 0, Sign = 1 };   // Sign: a TIL327-style +/- digit (g = minus, b = vertical)
+    enum DialStyle { DialTop = 0, Dial300 = 1 };   // DialTop: 0 near 12 o'clock over 288 degrees (the AMS
+                                                   // knobs); Dial300: the usual pot, 7 to 5 o'clock
 
     Kind kind = Text;
     float x = 0, y = 0, w = 0, h = 0;

@@ -45,6 +45,7 @@ private:
         std::unique_ptr<juce::ComboBox> sync;   // Param::tempo_sync: off or a note value
         std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> syncA;
         int group = -1;   // index in groups_, or -1: the shared controls under the boxes
+        int pos = 0;      // order in its box (Param::group_pos)
         juce::Component* control() const {
             return slider ? (juce::Component*)slider.get()
                    : combo ? (juce::Component*)combo.get()
@@ -54,16 +55,19 @@ private:
     };
 
     Processor& proc_;
-    juce::Label title_, panel_, status_;
+    juce::Label title_, status_;
     juce::ComboBox presets_;
     juce::TextButton romsButton_{"Choose ROMs..."};
     juce::TextButton modeButton_;
     std::unique_ptr<PanelView> panelView_;
     juce::TooltipWindow tooltips_{this, 600};
     std::vector<std::unique_ptr<Row>> rows_;
+    // the kit's Mix row (the last row, after the machine's), or null when the unit mixes itself
+    Row* mixRow() const;
     std::vector<Preset> presetList_;
     std::unique_ptr<juce::FileChooser> chooser_;
-    bool hasPanel_ = false;
+    bool romsShown_ = true;                     // the ROM button, while the ROMs need attention
+    static constexpr int kChooseRomsItem = 100000;   // the presets menu's last item
     std::vector<juce::String> groups_;          // Param::group names, in order
     std::vector<juce::Rectangle<int>> boxes_;   // their boxes, in the native layout
     int nativeW_ = 0, nativeH_ = 0;   // the layout's own size; the window shows it scaled

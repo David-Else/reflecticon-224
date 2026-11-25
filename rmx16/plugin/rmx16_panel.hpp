@@ -12,8 +12,9 @@
 //            modelled: drawn dark.
 //   digits   0-12 = E39 E5 ... E15 E40 (7 and 9 are the TIL327 sign digits, from E23)
 //   alpha    0-7 = the two DL1414s
-//   inputs   0 DELAY pot ("pot"), 1 INPUT, 2 OUTPUT (0-255, read by the firmware; the analog
-//            level stage itself is not modelled), 3 power (0/1)
+//   inputs   0 DELAY pot ("pot", 0-255, read by the firmware), 3 power (0/1); the INPUT and
+//            OUTPUT pots are the "input" / "output" parameters (the machine passes them on to the
+//            firmware as pots 1 and 2)
 #pragma once
 #include "../../shared/core/panel.hpp"
 
@@ -63,6 +64,12 @@ inline kit::PanelLayout rmx16_layout() {
         e.x = cx - d / 2, e.y = cy - d / 2, e.w = e.h = d, e.id = id, e.text = "0123456789", e.size = 2.7f;
         add(e);
     };
+    auto ppot = [&](float cx, float cy, float d, const char* param) {   // a host parameter's knob
+        E e;
+        e.kind = E::Pot;
+        e.x = cx - d / 2, e.y = cy - d / 2, e.w = e.h = d, e.param = param, e.text = "0123456789", e.size = 2.7f;
+        add(e);
+    };
     auto hole = [&](float cx, float cy, int style) {
         E e;
         e.kind = E::Hole;
@@ -84,8 +91,8 @@ inline kit::PanelLayout rmx16_layout() {
     text(47.6f, 44.3f, "in", 3.25f);
     text(66.4f, 46.8f, "o/flo", 3.25f);
     text(85.6f, 44.3f, "out", 3.25f);
-    pot(47.5f, 62.4f, 19.5f, InInput);
-    pot(85.6f, 62.4f, 19.5f, InOutput);
+    ppot(47.5f, 62.4f, 19.5f, "input");
+    ppot(85.6f, 62.4f, 19.5f, "output");
     led(66.4f, 51.6f, -1, 0xffff3020, 3.8f);
     led(66.4f, 57.9f, -1, 0xffff3020, 3.8f);
     led(66.4f, 65.2f, -1, 0xffffa020, 3.8f);
@@ -117,6 +124,7 @@ inline kit::PanelLayout rmx16_layout() {
         d.w = sign ? 4.2f : 5.4f, d.x = dc[i] - d.w / 2, d.y = 18.0f, d.h = 8.1f, d.id = i;
         d.style = sign ? E::Sign : E::Seven;
         d.colour = 0xffff2a1a;
+        d.size = 1.8f;   // segments ~10.5 % of the digit height (the close-up photo's dim segments)
         add(d);
     }
     {
@@ -156,15 +164,18 @@ inline kit::PanelLayout rmx16_layout() {
         E b;
         b.kind = E::Frame;
         b.style = 1;
-        b.colour = 0xff0c0c0c;
+        b.colour = 0xff1a1a1a;   // the rubber bezel: dark grey, round corners
+        b.size = 3.0f;
         b.x = 364.0f, b.y = 7.0f, b.w = 59.6f, b.h = 66.0f;
         add(b);
     }
-    const float kx[4] = {374.0f, 388.5f, 401.9f, 414.8f}, ky[4] = {21.0f, 34.1f, 47.6f, 60.4f};
+    // the AMS keypad (the same part as the DMX's), measured on retrogear-2952 and the DMX's 2943:
+    // a 12.8 mm pitch both ways, 8.5 x 6.6 mm caps
+    const float kx[4] = {374.0f, 386.8f, 399.6f, 412.4f}, ky[4] = {21.5f, 34.3f, 47.1f, 59.9f};
     const char* legend[4][4] = {{"1", "2", "3", "A"}, {"4", "5", "6", "B"}, {"7", "8", "9", "C"}, {"*", "0", "#", "D"}};
     const char* hot[4][4] = {{"1", "2", "3", "a"}, {"4", "5", "6", "b"}, {"7", "8", "9", "c"}, {"*.", "0", "#\r", "d"}};
     for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) key(kx[c], ky[r], 9.6f, 8.0f, 100 + 10 * c + (r + 1), legend[r][c], E::KeypadCream, hot[r][c]);
+        for (int c = 0; c < 4; c++) key(kx[c], ky[r], 8.5f, 6.6f, 100 + 10 * c + (r + 1), legend[r][c], E::KeypadCream, hot[r][c]);
 
     // power
     frame(431.3f, 2.6f, 452.8f, 78.8f);
@@ -184,10 +195,10 @@ inline kit::PanelLayout rmx16_layout() {
     frame(33.3f, 80.1f, 452.8f, 87.4f);
     text(242.0f, 83.75f, "model  rmx 16 : digital  reverberation  system", 4.0f);   // the maker's name and town left off
 
-    L.inputs = {{InPot, "pot", 0, 255, 128}, {InInput, "in", 0, 255, 128}, {InOutput, "out", 0, 255, 128}, {InPower, "power", 0, 1, 1}};
+    L.inputs = {{InPot, "pot", 0, 255, 128}, {InPower, "power", 0, 1, 1}};
     L.notes = "Keys go straight to the firmware's keyboard scan (shift-click latches a key down for chords; "
-              "computer keys: digits, . or * for *, Return or # for #, arrows nudge). The in/out pots are read "
-              "by the firmware; their analog level stage and the o/flo LEDs are not modelled (drawn dark).";
+              "computer keys: digits, . or * for *, Return or # for #, arrows nudge). The in/out pots are the "
+              "plugin's Input and Output; the o/flo LEDs are not modelled (drawn dark).";
     return L;
 }
 
