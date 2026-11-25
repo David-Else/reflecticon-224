@@ -1,39 +1,26 @@
 # reflecticon
 
-Emulations of early digital delay and reverb units that run each machine's own firmware (or
-PROMs) on models built from the schematics, in your browser or as a plugin. You supply the ROMs:
-nothing in this repository or its builds holds ROM bytes.
+This started as an emulation of one reverb machine from the service manual schematics: the 1978 Lexicon 224 (and 224x and 224xl).
 
-The 224's web demo: https://joelanders.github.io/reflecticon/
+I've since added four more early reverbs and delay units:
+* AMS RMX16
+* AMS DMX 15-80s
+* Klark Teknik DN780
+* Ursa Major StarGate 323
 
-## Machines
+The Lexicon 224 has a web demo (you still need to supply the ROMs): https://joelanders.github.io/reflecticon/
 
-| Folder | Machine | State |
-|---|---|---|
-| [`224/`](224/) | Lexicon 224, 224X, 224XL | plugin and web demo released (alpha); gate- and board-level models |
-| [`rmx16/`](rmx16/) | AMS RMX16 (v3.2) | plugin released (alpha), web build; hardware panel |
-| [`dmx1580/`](dmx1580/) | AMS DMX 15-80S | plugin released (alpha), web build; hardware panel |
-| [`dn780/`](dn780/) | Klark Teknik DN780 (v2.2) | plugin released (alpha), web build; hardware panel |
-| [`sg323/`](sg323/) | Ursa Major StarGate 323 | plugin released (alpha), web build; hardware panel |
-
-Makers and model names are named only to say what is emulated. This project is not affiliated with
+* Makers and model names are named only to say what is emulated. This project is not affiliated with
 or endorsed by any of them or their owners.
 
-## Plugins
+The Lexicon 224 is still the most interesting to me.
 
-All by joelanders, manufacturer code `Rflx`. Hosts key saved sessions on the codes, so they never
-change once released.
+[Biography of the machine's designer](https://www.davidgriesinger.com/biographies/) (with photo of him prototyping on the bench!).
 
-| Folder | Shown in hosts as | Bundle files | Plugin code | Bundle ID |
-|---|---|---|---|---|
-| `224/` | Reflecticon 224 | `Reflecticon224` | `Rf24` | `net.joelanders.reflecticon.224` |
-| `rmx16/` | Reflecticon RMX16 | `ReflecticonRMX16` | `Rx16` | `net.joelanders.reflecticon.rmx16` |
-| `dmx1580/` | Reflecticon DMX 15-80 | `ReflecticonDMX1580` | `Dm15` | `net.joelanders.reflecticon.dmx1580` |
-| `dn780/` | Reflecticon DN780 | `ReflecticonDN780` | `Dn78` | `net.joelanders.reflecticon.dn780` |
-| `sg323/` | Reflecticon StarGate 323 | `ReflecticonSG323` | `Sg32` | `net.joelanders.reflecticon.sg323` |
-
-The 224 was released as Reflexion224 (same codes, so old sessions open with it); its ROM folder is
-still `Application Support/Reflexion224`. Only the 224 has been released.
+I'm still not sure what's more impressive: designing the reverb *algorithms* (initially without realtime rendering hardware) or
+designing and building the *machine* that runs the algorithms. 1975-1978 predates DSP chips by a few years, so David Griesinger built a
+programmable DSP out of a few boards of 7400 series TTL logic chips. An 8080 host computer writes ~100 32-bit instructions to a shared
+Writable Control Store, and these run in a straight line once per audio frame. Throughput is one Delay Memory access and one MAC per instruction.
 
 ## Layout
 
@@ -49,8 +36,6 @@ web/            one web page for rmx16, dmx1580, dn780 and sg323
 notes/          notes that span machines
 ```
 
-A machine keeps its own copy of anything only it uses, CPU cores included; code moves to
-`shared/` once a second machine needs it.
 
 ## Building
 
