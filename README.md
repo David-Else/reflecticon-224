@@ -25,7 +25,18 @@ Writable Control Store, and these run in a straight line once per audio frame. T
 ## Layout
 
 ```
-224/            the 224: everything this repository held when it was reflecticon-224 (its own plugin and web demo)
+224/
+  8080                 I made an 8080 emulator with https://github.com/floooh/chips
+  sbc                  The board with the 8080 on it
+  emulator             All the boards brought together
+  juce-plugin          JUCE plugin
+  analog               SPICE simulations of analog parts
+  gate-level-verilog   1:1 with the chips on the schematics
+  board-level-verilog  Higher abstraction level
+  isa-level-verilog    Highest abstraction level
+  isa-level-cpp        The fast version
+  schematics
+  web-demo
 rmx16/  dmx1580/  dn780/  sg323/
   core/         the emulator
   plugin/       the plugin's machine definition and front panel
