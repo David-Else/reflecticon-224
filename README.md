@@ -17,7 +17,7 @@ The Lexicon 224 is still the most interesting to me.
 
 [Biography of the machine's designer](https://www.davidgriesinger.com/biographies/) (with photo of him prototyping on the bench!).
 
-I'm still not sure what's more impressive: designing the reverb *algorithms* (initially without realtime rendering hardware) or
+I'm still not sure what's more impressive: designing the reverb *algorithms* that sound good ~50 years later (presumably initially without realtime rendering hardware) or
 designing and building the *machine* that runs the algorithms. 1975-1978 predates DSP chips by a few years, so David Griesinger built a
 programmable DSP out of a few boards of 7400 series TTL logic chips. An 8080 host computer writes ~100 32-bit instructions to a shared
 Writable Control Store, and these run in a straight line once per audio frame. Throughput is one Delay Memory access and one MAC per instruction.
