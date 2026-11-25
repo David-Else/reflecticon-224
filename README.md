@@ -22,6 +22,14 @@ designing and building the *machine* that runs the algorithms. 1975-1978 predate
 programmable DSP out of a few boards of 7400 series TTL logic chips. An 8080 host computer writes ~100 32-bit instructions to a shared
 Writable Control Store, and these run in a straight line once per audio frame. Throughput is one Delay Memory access and one MAC per instruction.
 
+The web demo:
+
+<img width="750" alt="The web page" src="https://github.com/user-attachments/assets/c0db1bfa-9a64-4a50-8ab3-c72e130a686f" />
+
+The plugin:
+
+<img width="560" alt="The plugin" src="https://github.com/user-attachments/assets/230c2c7c-5f06-43e8-8b63-90de70f8466e" />
+
 ## Layout
 
 ```
@@ -50,7 +58,7 @@ notes/          notes that span machines
 
 ## Building
 
-The 224: see [`224/README.md`](224/README.md).
+The 224: `make help` in `224/` lists the targets. Your ROMs go in `224/firmware/`.
 
 The others, from this folder (JUCE 8 is fetched unless you point at a copy):
 
